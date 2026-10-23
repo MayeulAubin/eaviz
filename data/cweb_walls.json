@@ -1,0 +1,1 @@
+{"rmax": 200.0, "nverts": 575013, "ntris": 1209991, "log_lo": -0.5, "log_hi": 2.5, "format": "vertex: uint16 x,y,z (-rmax + q * 2 rmax / 65535), int8 normal, uint8 code; triangle: uint32 x3", "vparts": [{"file": "cweb_walls_v0.wasm", "n": 575013}], "iparts": [{"file": "cweb_walls_i0.wasm", "n": 1209991}]}

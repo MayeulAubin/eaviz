@@ -1,0 +1,35 @@
+{
+"files": [
+{
+"file": "halos_0.wasm",
+"n": 600000
+},
+{
+"file": "halos_1.wasm",
+"n": 600000
+},
+{
+"file": "halos_2.wasm",
+"n": 600000
+},
+{
+"file": "halos_3.wasm",
+"n": 600000
+},
+{
+"file": "halos_4.wasm",
+"n": 600000
+},
+{
+"file": "halos_5.wasm",
+"n": 600000
+},
+{
+"file": "halos_6.wasm",
+"n": 295277
+}
+],
+"stride": 20,
+"n": 3895277,
+"note": "x,y,z f32; rvir f16; lum f16; rgba u8"
+}
