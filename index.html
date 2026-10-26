@@ -90,6 +90,8 @@ html, body { height: 100%; margin: 0; }
     <button id="c-phys" aria-pressed="true" title="Blackbody set by the velocity dispersion, observed at T/(1+z)">σ<sub>v</sub> and z</button><button id="c-z" aria-pressed="false" title="Hue by redshift only">Redshift</button>
   </div>
   <div class="row live-only"><label for="size">Size</label><span class="out" id="o-size"></span><input id="size" type="range" min="0.3" max="3" step="0.05" value="1"></div>
+  <div class="row live-only"><label for="mmin" title="Halos lighter than this are not drawn (and not loaded)">Minimum mass</label><span class="out" id="o-mmin"></span><input id="mmin" type="range" min="12" max="15" step="0.05" value="12"></div>
+  <div class="row live-only"><label for="mmin-auto" title="Less detail raises the minimum mass as well as shortening the reach of the small halos">Minimum mass follows detail</label><input id="mmin-auto" type="checkbox" checked></div>
   <div class="row only-sky"><label for="dm-lo">Dark-matter level (±)</label><span class="out" id="o-dmlo"></span><input id="dm-lo" type="range" min="-2" max="2" step="0.05" value="0"></div>
 
   <h2>View</h2>
@@ -309,6 +311,7 @@ out vec3 vc; out float vratio; out vec4 vM; out float vStr; out float vSm;
 uniform float srcSize;      // strong lensing: halos behind the lenses drawn at this fraction of their true size
 uniform float lensSky;
 uniform float hideLens;     // the lens-field halos are drawn from node L: hide their flagged copies in the cubes (col.a)
+uniform float mMin12;       // minimum mass / 1e12 (mass from lum = (M / 1e12)^(2/3) (1+z)^-2 at the halo's light-cone z)
 uniform float minPx, smoothUnres;   // smallest sprite (px); headsets: 3 px with a smooth profile for unresolved halos,
                                     // so sub-pixel head jitter does not make them twinkle (same light)
 void main() {
@@ -319,7 +322,8 @@ void main() {
   }
   vec3 r = rotT * (P - cam);
   float d = length(r);
-  if (cull(r, chi) || d < dRange.x || d >= dRange.y || (hideLens > 0.5 && col.a > 0.5)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
+  float zp1 = 1.0 + zOf(chi);
+  if (cull(r, chi) || d < dRange.x || d >= dRange.y || (hideLens > 0.5 && col.a > 0.5) || pow(max(rl.y, 0.0) * zp1 * zp1, 1.5) < mMin12) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
   float rv = sizeK * rl.x * (dRange.x > 0.0 ? srcSize : 1.0);
   // weak-lensing distortion (sky mode): image offsets t map to source offsets A t, A = I - amp (kappa I + gamma),
   // in the (e_theta, e_phi) basis; with the screen basis S of that tangent plane, a sprite pixel q samples the source
@@ -952,15 +956,21 @@ const haloLayout = (s) => {
 // ---- live halos: every host halo M > 1e12 in a mass-ordered octree (halo_tree.py), streamed around the camera. Cubes
 // are taken in decreasing order of the brightest halo they can hold seen from the camera ((m_min of the parent)^(2/3) /
 // d^2) until the budget: all the bright halos, the small ones only nearby. The budget follows the detail level (in steps
-// of sqrt 2, so the automatic level does not re-plan all the time). The GPU buffer holds the taken nodes in that order
-// (20 B records as halos.json), so drawing fewer drops the faintest first. With strong lensing, node L (every halo in
+// of sqrt 2, so the automatic level does not re-plan all the time); so does the minimum mass (mminEff: subtrees whose
+// halos are all lighter are not loaded, the shader hides the lighter halos of the others), so less detail means both a
+// higher mass cut and a shorter reach for the small halos. Each node keeps its place in the GPU buffer (whole units of
+// 256 halos, 20 B records as halos.json, the rest of its last unit zeroed): a new node is one small write, a dropped one
+// frees its units, nothing else moves (rewriting the buffer in plan order stalled the frame at every re-plan); the
+// occupied runs are drawn. With strong lensing, node L (every halo in
 // the fields behind the lenses) comes first and the shader hides its copies in the cubes. The fly-mode filter takes the 10 Mpc/h distance shells of its slab
 // instead (every halo in it); sky mode, or a field under 30 deg, takes only the cubes in the view cone (not in a
 // headset: turning would reload). Without halo_tree.json: the fixed flux-limited set of halos.json.
-const HALO_MAX = 6000000, HALO_CACHE = 2 * HALO_MAX;
+const HALO_MAX = 6000000, HALO_CACHE = 2 * HALO_MAX, HALO_U = 256, HALO_NU = Math.ceil(1.1 * HALO_MAX / HALO_U);
 function haloTree(json) {
   const t = { _loaded: 0, _total: 0, vao: gl.createVertexArray(), buf: gl.createBuffer(), cache: new Map(), cached: 0,
-              wanted: new Set(), inflight: 0, plan: [], drawn: [], eye: null, tPlan: 0, tUp: 0, dirty: false };
+              wanted: new Set(), inflight: 0, plan: [], eye: null, tPlan: 0, tUp: 0, dirty: false,
+              occ: new Uint8Array(HALO_NU), at: new Map(), runs: [] };
+  const ZERO = new Uint8Array(HALO_U * 20), U = HALO_U;
   Object.defineProperties(t, { loaded: { get: () => t.fb ? t.fb.loaded : t._loaded },
                                total: { get: () => t.fb ? t.fb.total : t._total } });
   t.start = () => fetch(DATA + json).then(r => { if (!r.ok) throw new Error(); return r.json(); }).then(j => {
@@ -974,8 +984,7 @@ function haloTree(json) {
       if (name.length > 1) { const p = name.slice(0, -1); if (!t.kids.has(p)) t.kids.set(p, []); t.kids.get(p).push(name); }
     }
     for (const k of Object.keys(j.shells || {})) t.box.set("s" + k, root);
-    t.stage = new Uint8Array(HALO_MAX * 20);
-    gl.bindBuffer(gl.ARRAY_BUFFER, t.buf); gl.bufferData(gl.ARRAY_BUFFER, HALO_MAX * 20, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, t.buf); gl.bufferData(gl.ARRAY_BUFFER, HALO_NU * U * 20, gl.DYNAMIC_DRAW);
     gl.bindVertexArray(t.vao); haloLayout(20); gl.bindVertexArray(null);
     t.ready = true; status();
   }).catch(() => { t.fb = pointCloud("halos.json", halo, haloLayout); t.fb.start(); t.vao = t.fb.vao; });
@@ -996,7 +1005,7 @@ function haloTree(json) {
     }
     if (ctx.lens && t.meta.nodes.L) { out.push("L"); n += t.meta.nodes.L[0]; }
     const test = ctx.cone ? b => inCone(b, eye, ctx.fwd, ctx.cone) : null;
-    const heap = [[Infinity, "r"]];            // max-heap of [bound, cube]
+    const heap = [[Infinity, "r", Infinity]];  // max-heap of [bound, cube, heaviest possible mass]
     const push = (e) => { heap.push(e); let i = heap.length - 1;
       while (i > 0) { const p = (i - 1) >> 1; if (heap[p][0] >= heap[i][0]) break; [heap[p], heap[i]] = [heap[i], heap[p]]; i = p; } };
     const pop = () => { const top = heap[0], last = heap.pop();
@@ -1006,7 +1015,8 @@ function haloTree(json) {
           if (m === i) break; [heap[m], heap[i]] = [heap[i], heap[m]]; i = m; } }
       return top; };
     while (heap.length) {
-      const [, name] = pop(), [cnt, mmin] = t.meta.nodes[name];
+      const [, name, mmax] = pop(), [cnt, mmin] = t.meta.nodes[name];
+      if (mmax < ctx.mmin) continue;                   // all lighter than the cut, and so are its children
       if (test && !test(t.box.get(name))) continue;    // nor its children: they lie inside it
       if (n + cnt > ctx.budget) break;
       out.push(name); n += cnt;
@@ -1014,7 +1024,7 @@ function haloTree(json) {
       for (const c of t.kids.get(name) || []) {
         const [x, y, z, h] = t.box.get(c);
         const dx = Math.max(Math.abs(eye[0] - x) - h, 0), dy = Math.max(Math.abs(eye[1] - y) - h, 0), dz = Math.max(Math.abs(eye[2] - z) - h, 0);
-        push([lb / Math.max(dx * dx + dy * dy + dz * dz, 1), c]);
+        push([lb / Math.max(dx * dx + dy * dy + dz * dz, 1), c, mmin]);
       }
     }
     t._total = n; return out;
@@ -1046,23 +1056,52 @@ function haloTree(json) {
     const inPlan = new Set(t.plan), old = [...t.cache].filter(([k]) => !inPlan.has(k)).sort((a, b) => a[1].used - b[1].used);
     for (const [k, v] of old) { if (t.cached <= HALO_CACHE) break; t.cache.delete(k); t.cached -= v.d.length / 20; }
   }
-  function upload() {                          // rewrite the buffer from the first node that changed
-    const use = t.plan.filter(k => t.cache.has(k));
-    let i = 0, off = 0;
-    while (i < use.length && i < t.drawn.length && use[i] === t.drawn[i]) off += t.cache.get(use[i++]).d.length;
-    const start = off;
-    for (let k = i; k < use.length; k++) { const d = t.cache.get(use[k]).d; t.stage.set(d, off); off += d.length; }
-    if (off > start) { gl.bindBuffer(gl.ARRAY_BUFFER, t.buf); gl.bufferSubData(gl.ARRAY_BUFFER, start, t.stage.subarray(start, off)); }
-    t.drawn = use; t._loaded = off / 20; t.lensOn = use.includes("L"); t.dirty = false; status();
+  function alloc(nu) {                         // first fit: nu free units in a row
+    for (let u = 0, run = 0; u < HALO_NU; u++) { run = t.occ[u] ? 0 : run + 1; if (run === nu) return u - nu + 1; }
+    return -1;
   }
+  function put(k, u0) {
+    const d = t.cache.get(k).d, n = d.length / 20, nu = Math.max(1, Math.ceil(n / U));
+    t.occ.fill(1, u0, u0 + nu); t.at.set(k, [u0, nu, n]);
+    gl.bufferSubData(gl.ARRAY_BUFFER, u0 * U * 20, d);
+    if (n < nu * U) gl.bufferSubData(gl.ARRAY_BUFFER, (u0 * U + n) * 20, ZERO, 0, (nu * U - n) * 20);
+    return nu;
+  }
+  function compact() {                         // rare (fragmented): every placed node again, packed
+    const keep = [...t.at.keys()]; t.occ.fill(0); t.at.clear();
+    let u = 0; for (const k of keep) u += put(k, u);
+  }
+  function place() {                           // drop the nodes out of the plan, write the new ones (<= ~16 MB a pass)
+    const inPlan = new Set(t.plan); let changed = false, bytes = 0;
+    t.dirty = false;
+    for (const [k, [u0, nu]] of t.at) if (!inPlan.has(k)) { t.occ.fill(0, u0, u0 + nu); t.at.delete(k); changed = true; }
+    gl.bindBuffer(gl.ARRAY_BUFFER, t.buf);
+    for (const k of t.plan) {
+      if (t.at.has(k) || !t.cache.has(k)) continue;
+      if (bytes > 16e6) { t.dirty = true; break; }
+      const nu = Math.max(1, Math.ceil(t.cache.get(k).d.length / 20 / U));
+      let u0 = alloc(nu);
+      if (u0 < 0) { compact(); u0 = alloc(nu); if (u0 < 0) break; }
+      put(k, u0); bytes += t.cache.get(k).d.length; changed = true;
+    }
+    if (!changed) return;
+    t.runs = []; let n = 0;
+    for (let u = 0; u < HALO_NU;) { if (!t.occ[u]) { u++; continue; } const u0 = u; while (u < HALO_NU && t.occ[u]) u++; t.runs.push([u0 * U, (u - u0) * U]); }
+    for (const [, , m] of t.at.values()) n += m;
+    t._loaded = n; t.lensOn = t.at.has("L"); status();
+  }
+  t.draw = (nFb) => {                          // the occupied runs (the fixed set of halos.json: its first nFb)
+    if (t.fb) return gl.drawArrays(gl.POINTS, 0, nFb);
+    for (const [a, n] of t.runs) gl.drawArrays(gl.POINTS, a, n);
+  };
   t.update = (eye, v) => {                     // every view; re-plans at most every 0.3 s, when the camera or a region changed
     if (!t.ready) return;
     const now = performance.now();
     // view cone: the field's half-diagonal plus a margin (a turn by less than the margin keeps the plan)
     const half = v.fovDiag / 2, cone = !v.xr && (state.mode === "sky" || v.fovDiag < 0.5236) ? Math.cos(Math.min(Math.PI, 1.3 * half + 0.035)) : 0;
     const budget = Math.min(HALO_MAX, Math.pow(2, Math.round(2 * Math.log2(Math.max(v.budget, 1e4))) / 2));
-    const ctx = { f: v.f, cone, fwd: v.fwd, budget, lens: strongOn() };
-    const key = JSON.stringify([cone ? cone.toFixed(4) : 0, v.f ? [v.f.lo.toFixed(1), v.f.hi.toFixed(1)] : 0, budget, ctx.lens]);
+    const lm = Math.round(20 * mminEff()) / 20, ctx = { f: v.f, cone, fwd: v.fwd, budget, lens: strongOn(), mmin: Math.pow(10, lm) };
+    const key = JSON.stringify([cone ? cone.toFixed(4) : 0, v.f ? [v.f.lo.toFixed(1), v.f.hi.toFixed(1)] : 0, budget, ctx.lens, lm]);
     const turned = cone && t.fwd && Math.acos(Math.min(1, v.fwd[0] * t.fwd[0] + v.fwd[1] * t.fwd[1] + v.fwd[2] * t.fwd[2])) > 0.3 * half + 0.017;
     if (now - t.tPlan > 300 && (!t.eye || key !== t.key || turned || Math.hypot(eye[0] - t.eye[0], eye[1] - t.eye[1], eye[2] - t.eye[2]) > 1)) {
       t.tPlan = now; t.eye = eye.slice(); t.key = key; t.fwd = v.fwd.slice();
@@ -1072,7 +1111,7 @@ function haloTree(json) {
         t.dirty = true; evict(); fetchMore();
       }
     }
-    if (t.dirty && now - t.tUp > 200) { t.tUp = now; upload(); }
+    if (t.dirty && now - t.tUp > 100) { t.tUp = now; place(); }
   };
   return t;
 }
@@ -1359,6 +1398,14 @@ bindRange("cw-fade", "o-cwfade", x => WEBL.fadeD = Math.pow(10, x), x => Math.po
 bindRange("cw-trim", "o-cwtrim", x => WEBL.trim = x, x => x.toFixed(2));
 bindRange("exp", "o-exp", x => state.expo = x, x => (x >= 0 ? "+" : "") + x.toFixed(1));
 bindRange("size", "o-size", x => state.size = x, x => "×" + x.toFixed(2));
+// minimum halo mass (log10 M, Msun/h): set by hand, or following the detail level (each halving of the detail shared
+// about evenly between this cut, n(>M) ~ M^-0.9, and the reach of the small halos)
+const mminEff = () => state.mminAuto ? Math.min(15, 12 - 0.55 * Math.log10(PERF.q)) : state.mmin;
+const SUPD = "⁰¹²³⁴⁵⁶⁷⁸⁹", massTxt = x => { const e = Math.floor(x + 1e-9); return `${Math.pow(10, x - e).toFixed(1)}×10${String(e).split("").map(c => SUPD[+c]).join("")} M☉/h`; };
+state.mmin = 12; state.mminAuto = true;
+const mminShow = () => { const x = mminEff(); $("mmin").value = x; $("o-mmin").textContent = massTxt(x) + (state.mminAuto ? " (auto)" : ""); };
+$("mmin").addEventListener("input", e => { state.mmin = parseFloat(e.target.value); setCheck("mmin-auto", false); mminShow(); });
+$("mmin-auto").addEventListener("change", e => { if (!e.target.checked) state.mmin = mminEff(); state.mminAuto = e.target.checked; mminShow(); });
 bindRange("dm-lo", "o-dmlo", x => state.dmlo = x, x => (x >= 0 ? "+" : "") + x.toFixed(1));
 bindRange("f-z", "o-z", x => { state.fz = x; filtMoved = performance.now(); }, () => "z = " + (slabs.length ? slabs[slabWanted()].z : filterWindow().z).toFixed(2));
 bindRange("f-split", "o-split", x => state.splitPos = x, x => x.toFixed(2));
@@ -1497,7 +1544,7 @@ function renderView(V, f, slabMode) {
     expo *= (focal / 571.3) ** 2;
     gl.uniform1f(halo.u.sizeK, state.size); gl.uniform1f(halo.u.expo, expo); gl.uniform1f(halo.u.colourMode, state.colour);
     gl.uniform1f(halo.u.minPx, V.xr ? 3.0 : 1.5); gl.uniform1f(halo.u.smoothUnres, V.xr ? 1 : 0);
-    gl.uniform1i(halo.u.pal, 9); lensUniforms(halo.u, V.pos); gl.uniform1f(halo.u.hideLens, halos.lensOn ? 1 : 0);
+    gl.uniform1i(halo.u.pal, 9); lensUniforms(halo.u, V.pos); gl.uniform1f(halo.u.hideLens, halos.lensOn ? 1 : 0); gl.uniform1f(halo.u.mMin12, halos.fb ? 0 : Math.pow(10, mminEff() - 12));
     gl.bindVertexArray(halos.vao);
     // the detail level: the brightest first, up to the budget (the loader follows in steps; this cut is immediate);
     // the fixed set of halos.json: its share q
@@ -1510,20 +1557,20 @@ function renderView(V, f, slabMode) {
       for (let k = 0; k < LC.nSel; k++) dmin = Math.min(dmin, Math.hypot(LC.sel[4 * k] - V.pos[0], LC.sel[4 * k + 1] - V.pos[1], LC.sel[4 * k + 2] - V.pos[2]));
       dmin *= 1.02;                                               // the lens's own members are not lensed by it
       gl.uniform2f(halo.u.dRange, 0, dmin); gl.uniform1f(halo.u.projScale, 1);
-      gl.drawArrays(gl.POINTS, 0, nHalo);
+      halos.draw(nHalo);
       ensureLayers(W, H);
       const dmax = 12000, q = Math.pow(dmax / dmin, 1 / 3), e = [dmin, dmin * q, dmin * q * q, dmax];
       gl.uniform1f(halo.u.projScale, LYR.scale); gl.uniform1f(halo.u.splitX, -1);
       for (let i = 0; i < 3; i++) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, LYR.fb[i]); gl.viewport(0, 0, W, H); gl.clear(gl.COLOR_BUFFER_BIT);
         gl.uniform2f(halo.u.dRange, e[i], e[i + 1]);
-        gl.drawArrays(gl.POINTS, 0, nHalo);
+        halos.draw(nHalo);
         LYR.ds[i] = Math.sqrt(e[i] * e[i + 1]);                   // the layer's source distance
       }
       LYR.on = true;
     } else {
       gl.uniform2f(halo.u.dRange, 0, 1e30); gl.uniform1f(halo.u.projScale, 1);
-      gl.drawArrays(gl.POINTS, 0, nHalo);
+      halos.draw(nHalo);
     }
     gl.bindVertexArray(null);
   }
@@ -1753,6 +1800,7 @@ document.addEventListener("input", e => { if (e.target.id !== "dt-q") perfReset(
 function perfShow() {                                      // the Detail panel follows the level (also when set in the headset)
   $("dt-q").value = Math.log10(PERF.q); $("o-dtq").textContent = Math.round(100 * PERF.q) + " %"; $("dt-auto").checked = PERF.auto;
   $("dt-fps").textContent = `${Math.round(PERF.fps)} fps` + (XR.session ? " (headset)" : "");
+  if (state.mminAuto) mminShow();
 }
 $("dt-q").addEventListener("input", e => { perfSet(Math.pow(10, parseFloat(e.target.value))); PERF.auto = false; perfShow(); });
 $("dt-auto").addEventListener("change", e => { PERF.auto = e.target.checked; PERF.lo = 0; perfReset(false); });
@@ -1814,7 +1862,10 @@ function menuItems() {
   if (sky) it.push(["Rendering", state.render === "pre" ? "pre-rendered" : "live", d => setRender(state.render === "pre" ? "live" : "pre")]);
   it.push(["Halo exposure", (state.expo >= 0 ? "+" : "") + state.expo.toFixed(1), d => setRange("exp", state.expo + 0.2 * d)]);
   if (live) it.push(["Halo colour", state.colour === 0 ? "σv and z" : "redshift", d => $(state.colour === 0 ? "c-z" : "c-phys").click()],
-                    ["Halo size", "×" + state.size.toFixed(2), d => setRange("size", state.size + 0.1 * d)]);
+                    ["Halo size", "×" + state.size.toFixed(2), d => setRange("size", state.size + 0.1 * d)],
+                    ["Minimum halo mass", massTxt(mminEff()) + (state.mminAuto ? " (auto; A: fix)" : " (A: auto)"),
+                     d => { state.mmin = Math.min(15, Math.max(12, mminEff() + 0.1 * d)); setCheck("mmin-auto", false); mminShow(); },
+                     () => { setCheck("mmin-auto", !state.mminAuto); }]);
   if (sky) {
     it.push(["Milky Way", state.w.mw > 0 ? "on" : "off", d => toggleRange("w-mw")],
             [MATTER.kind === "web" ? "Cosmic web" : "Dark matter", state.w.dm > 0 ? "on" : "off", d => toggleRange("w-dm")],
