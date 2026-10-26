@@ -104,8 +104,8 @@ html, body { height: 100%; margin: 0; }
   <h2>Redshift filter (Hα, R = 100)</h2>
   <div class="row"><label for="f-on">Filter on</label><input id="f-on" type="checkbox"></div>
   <div class="row"><label for="f-z">Position</label><span class="out" id="o-z"></span><input id="f-z" type="range" min="0" max="1" step="0.001" value="0.3"></div>
-  <div class="row only-sky"><label for="split-on" id="split-lab">Split halos | dark matter</label><input id="split-on" type="checkbox"></div>
-  <div class="row only-sky"><label for="f-split">Split position</label><span class="out" id="o-split"></span><input id="f-split" type="range" min="0" max="1" step="0.01" value="0.5"></div>
+  <div class="row"><label for="split-on" id="split-lab">Split halos | dark matter</label><input id="split-on" type="checkbox"></div>
+  <div class="row"><label for="f-split">Split position</label><span class="out" id="o-split"></span><input id="f-split" type="range" min="0" max="1" step="0.01" value="0.5"></div>
 
   <div class="only-sky">
   <h2>Lensing</h2>
@@ -820,7 +820,7 @@ function skyDM() {
 function setMatter(k) {
   MATTER.kind = k; $("mt-web").setAttribute("aria-pressed", k === "web"); $("mt-dm").setAttribute("aria-pressed", k === "dm");
   const name = k === "web" ? "Cosmic web" : "Dark matter";
-  $("w-dm-lab").textContent = name; $("split-lab").textContent = "Split halos | " + name.toLowerCase();
+  $("w-dm-lab").textContent = name; $("split-lab").textContent = "Split halos | " + (state.mode === "fly" ? "cosmic web" : name.toLowerCase());
   $("w-dm-lab").title = k === "web" ? "The cosmic web found in the simulated density (DisPerSE): walls, filaments and knots, to ~1.4 Gpc/h"
                                     : "The film's dark-matter sky (pre-rendered, to 1.5 Gpc/h)";
   skyDM(); webMaybe();
@@ -1377,6 +1377,7 @@ function setMode(m) {
   state.mode = m; $("m-sky").setAttribute("aria-pressed", m === "sky"); $("m-fly").setAttribute("aria-pressed", m === "fly");
   document.querySelectorAll(".only-sky").forEach(e => e.hidden = m !== "sky"); document.querySelectorAll(".only-fly").forEach(e => e.hidden = m !== "fly");
   $("fly-ctl").hidden = m !== "fly"; if (m === "sky") state.pos = [0, 0, 0];
+  $("split-lab").textContent = "Split halos | " + (m === "fly" || MATTER.kind === "web" ? "cosmic web" : "dark matter");
   if (state.w.dm > 0) { skyDM(); } panelState(); status(); }
 $("m-sky").onclick = () => setMode("sky"); $("m-fly").onclick = () => setMode("fly");
 // sky rendering: pre-rendered (the film's images; few options) or live (halos drawn here; every option)
@@ -1436,7 +1437,7 @@ canvas.addEventListener("pointermove", e => {
     if (t.d > 0 && two.d > 0) state.fov = Math.max(0.006, Math.min(120, state.fov * two.d / t.d));     // spread = zoom in
     const dx = t.c[0] - two.c[0], dy = t.c[1] - two.c[1], H = canvas.clientHeight;
     if (state.mode === "fly") {
-      const R = rotation(), f = -2 * state.speed * dy / H, sd = -2 * state.speed * dx / H;   // fingers up = forward
+      const R = rotation(), f = -2 * state.speed * dy / H, sd = -2 * SIDE_K * state.speed * dx / H;   // fingers up = forward
       for (let i = 0; i < 3; i++) state.pos[i] += f * R.f[i] + sd * R.r[i];
     } else { const k = state.fov / H * Math.PI / 180; state.yaw += dx * k; state.pitch = Math.max(-1.55, Math.min(1.55, state.pitch + dy * k)); }
     two = t; return;
@@ -1603,15 +1604,18 @@ function filterNow() {
 }
 
 const fieldTxt = () => state.fov >= 1 ? `${state.fov.toFixed(0)}°` : state.fov >= 1 / 60 ? `${(state.fov * 60).toFixed(1)}′` : `${(state.fov * 3600).toFixed(0)}″`;
+// sideways and vertical moves at half the speed: they sweep the whole view across (angular rate v / d) while moving
+// forward barely moves what is ahead, so at equal speed they looked twice as fast (user, 2026-10-26); desktop, touch, VR
+const SIDE_K = 0.5;
 function moveKeys(R, dt) {
   if (state.keys.has("KeyZ")) state.fov = Math.max(0.006, state.fov * Math.exp(-1.5 * dt));   // zoom in / out (both modes)
   if (state.keys.has("KeyX")) state.fov = Math.min(120, state.fov * Math.exp(1.5 * dt));
   if (state.mode !== "fly") return;
-  const k = state.keys, v = state.speed * dt * (k.has("KeyQ") ? 10 : 1), mv = [0, 0, 0];
+  const k = state.keys, v = state.speed * dt * (k.has("KeyQ") ? 10 : 1), vs = SIDE_K * v, mv = [0, 0, 0];
   const add = (vec, s) => { for (let i = 0; i < 3; i++) mv[i] += vec[i] * s; };
   if (k.has("KeyW") || k.has("ArrowUp")) add(R.f, v); if (k.has("KeyS") || k.has("ArrowDown")) add(R.f, -v);
-  if (k.has("KeyD") || k.has("ArrowRight")) add(R.r, v); if (k.has("KeyA") || k.has("ArrowLeft")) add(R.r, -v);
-  if (k.has("Space") || k.has("KeyR")) add(R.u, v); if (k.has("ShiftLeft") || k.has("KeyF")) add(R.u, -v);
+  if (k.has("KeyD") || k.has("ArrowRight")) add(R.r, vs); if (k.has("KeyA") || k.has("ArrowLeft")) add(R.r, -vs);
+  if (k.has("Space") || k.has("KeyR")) add(R.u, vs); if (k.has("ShiftLeft") || k.has("KeyF")) add(R.u, -vs);
   for (let i = 0; i < 3; i++) state.pos[i] += mv[i];
 }
 
@@ -1679,13 +1683,15 @@ function frame(now) {
 // XR.M maps XR vectors (x right, y up, -z forward) to Galactic axes; turning and "go to" rotate it.
 // Controllers (Quest-style xr-standard mapping): see CTRL_HELP (the guide page of the menu, shown on entering VR);
 // B opens a menu panel with the main options.
-const CTRL_HELP = {                                        // [control, sky mode, fly mode]
-  left: [["Trigger", "previous view", "fly backward"], ["Grip", "halo exposure −", "halo exposure −"],
-         ["Stick", "filter z ↕ · split ↔", "move: forward / back ↕, sideways ↔"], ["Stick press", "reset view", "reset view"],
-         ["Y", "halo colour (live)", "halo colour"], ["X", "matter layer on / off", "cosmic web on / off"]],
-  right: [["Trigger", "next view", "fly forward (where you look)"], ["Grip", "halo exposure +", "halo exposure +"],
-          ["Stick", "zoom ↕ · halo size ↔", "speed ↕ · filter z ↔"], ["Stick press", "lensing on / off", "back to the observer"],
-          ["B", "options menu", "options menu"], ["A", "sky / fly mode", "sky / fly mode"]] };
+const CTRL_HELP = {   // [control (where its number goes on the drawing), how, sky mode, fly mode]: the guide shows purposes
+  left: [["stick", "↕", "redshift filter nearer / farther", "fly forward / back"], ["stick", "↔", "move the split", "slide left / right"],
+         ["press", "press", "reset the view", "reset the view"], ["trig", "", "lensing deflection weaker", "move down"],
+         ["grip", "", "halos fainter", "halos fainter"], ["up", "", "redshift filter on / off", "redshift filter on / off"],
+         ["low", "", "split view on / off", "split view on / off"]],
+  right: [["stick", "↕", "zoom in / out", "faster / slower"], ["stick", "↔", "halos smaller / larger", "redshift filter nearer / farther"],
+          ["press", "press", "lensing deflection on / off", "back to the observer"], ["trig", "", "lensing deflection stronger", "move up"],
+          ["grip", "", "halos brighter", "halos brighter"], ["up", "", "options menu", "options menu"],
+          ["low", "", "sky ↔ fly mode", "sky ↔ fly mode"]] };
 const XR_HALO_CAP = 1500000;   // live halos drawn per eye in a headset (the brightest first): keeps lensing fluid
 // Detail level q (0.02-1): scales the live halos drawn, the cosmic-web segments (depth), the walls (q >= 0.3) and the
 // resolution (canvas pixel ratio; headsets: WebXR viewport scale). Set by hand (Detail panel, VR menu) or by the
@@ -1786,28 +1792,20 @@ function panelInit() {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 }
 const fire = (id, ev = "input") => $(id).dispatchEvent(new Event(ev));
-const setRange = (id, v) => { const e = $(id); e.value = Math.min(parseFloat(e.max), Math.max(parseFloat(e.min), v)); fire(id); };
+// step "any": the headset nudges values by rate x dt (~0.01 a frame), which a stepped slider would round away
+const setRange = (id, v) => { const e = $(id); e.step = "any"; e.value = Math.min(parseFloat(e.max), Math.max(parseFloat(e.min), v)); fire(id); };
 const toggleRange = id => setRange(id, parseFloat($(id).value) > 0 ? 0 : 1);
 const setCheck = (id, on) => { if ($(id).checked !== on) { $(id).checked = on; fire(id, "change"); } };
-const SKY_VIEWS = [["Opening view", null], ["Einstein ring 1", "ring1"], ["Einstein ring 2", "ring2"], ["Einstein ring 3", "ring3"], ["Most massive cluster", "massive"]];
 const FLY_VIEWS = [["Observer", "observer"], ["Hero cluster", "hero"], ["Most massive halo", "massive"], ["Deepest void", "void"], ["Outside Eä", "outside"]];
 let xrView = 0;
-function xrGo(i, fw) {                                    // a bookmarked view, from the current gaze fw
-  if (state.mode === "sky") {
-    const [, k] = SKY_VIEWS[i];
-    if (k) { goRing(k); XR.zoom = Math.min(XR_ZMAX, 90 / state.fov); turnTo(fw, k === "massive" ? [-336.6206, 792.4707, -706.8691] : RINGS[k]); }
-    else { XR.zoom = 1; turnTo(fw, S_HERO); }
-    toast(SKY_VIEWS[i][0]);
-  } else {
-    const k = FLY_VIEWS[i][1]; document.querySelector(`[data-go="${k}"]`).click(); XR.origin = state.pos.slice();
-    if (LOOKAT[k]) turnTo(fw, LOOKAT[k].map((x, j) => x - XR.origin[j]));
-    toast(FLY_VIEWS[i][0]);
-  }
+function xrGo(i, fw) {                                    // a bookmarked fly-mode place, from the current gaze fw
+  const k = FLY_VIEWS[i][1]; document.querySelector(`[data-go="${k}"]`).click(); XR.origin = state.pos.slice();
+  if (LOOKAT[k]) turnTo(fw, LOOKAT[k].map((x, j) => x - XR.origin[j]));
+  toast(FLY_VIEWS[i][0]);
 }
 const XR_ZMAX = 5000;
-const S_HERO = [Math.cos(0.6) * Math.cos(0.1), Math.sin(0.6) * Math.cos(0.1), Math.sin(0.1)];
 function menuItems() {
-  const sky = state.mode === "sky", live = !sky || state.render === "live", views = sky ? SKY_VIEWS : FLY_VIEWS;
+  const sky = state.mode === "sky", live = !sky || state.render === "live", views = FLY_VIEWS;
   const it = [["Controller guide", "A / trigger: show", null, () => { XP.page = "help"; }],
               ["Mode", sky ? "Sky" : "Fly", d => xrSetMode(sky ? "fly" : "sky")],
               ["Frame rate", perfText() + (PERF.show ? " · shown" : ""), d => { PERF.show = !PERF.show; }],
@@ -1824,7 +1822,8 @@ function menuItems() {
             ["CMB", state.w.cmb > 0 ? "on" : "off", d => toggleRange("w-cmb")],
             ["Convergence κ map", state.lens.k > 0 ? "on" : "off", d => setRange("l-k", state.lens.k > 0 ? 0 : 0.6)],
             ["Shear whiskers", state.lens.whisk ? "on" : "off", d => setCheck("l-wh", !state.lens.whisk)]);
-    if (live) it.push(["Lensing deflections", state.lens.weak ? "weak (no strong lensing in VR)" : "off", d => setCheck("l-on", !state.lens.weak)]);
+    if (live) it.push(["Weak-lensing deflection", state.lens.weak ? "on" : "off", d => setCheck("l-on", !state.lens.weak)]);
+    if (live && state.lens.weak) it.push(["Deflection ×", (state.lens.ampX || 1).toPrecision(2), d => setRange("l-amp", Math.log10(state.lens.ampX || 1) + 0.1 * d)]);
     it.push(["Zoom", "×" + XR.zoom.toPrecision(3), d => { XR.zoom = Math.min(XR_ZMAX, Math.max(1, XR.zoom * Math.pow(2, d))); }]);
   } else {
     it.push(["CMB sphere", state.cmbbg ? "on" : "off", d => setCheck("cmbbg", !state.cmbbg)],
@@ -1832,14 +1831,19 @@ function menuItems() {
             ["VR scale", state.vrScale.toPrecision(2) + " Mpc/h per m", d => setRange("vr-scale", Math.log10(state.vrScale) + 0.1 * d)]);
   }
   if (!sky) it.push(["Cosmic web", state.w.dm > 0 ? "on" : "off", d => toggleRange("w-dm")]);
-  if (live && webWanted()) it.push(["Web brightness", (Math.log10(WEBL.gain) >= 0 ? "+" : "") + Math.log10(WEBL.gain).toFixed(1), d => setRange("cw-gain", Math.log10(WEBL.gain) + 0.2 * d)]);
+  const lgTxt = x => (x >= 0 ? "+" : "") + x.toFixed(1);
+  if (live && webWanted()) it.push(["Cosmic web exposure", lgTxt(Math.log10(WEBL.gain)), d => setRange("cw-gain", Math.log10(WEBL.gain) + 0.2 * d)],
+                                   ["Web depth fade", WEBL.fadeD.toFixed(0) + " Mpc/h", d => setRange("cw-fade", Math.log10(WEBL.fadeD) + 0.1 * d)],
+                                   ["Web clusters", lgTxt(Math.log10(WEBL.cgain)), d => setRange("cw-cl", Math.log10(WEBL.cgain) + 0.2 * d)],
+                                   ["Web walls (near)", lgTxt(Math.log10(WEBL.wgain)), d => setRange("cw-wall", Math.log10(WEBL.wgain) + 0.2 * d)]);
   if (live) it.push(["Region of interest", ["all", "Euclid Wide", "Silmarilli"][state.roi], d => $(["r-all", "r-ews", "r-sil"][(state.roi + 3 + d) % 3]).click()]);
   it.push(["Comoving cube", state.grid ? "on" : "off", d => setCheck("grid-on", !state.grid)]);
   it.push(["Redshift filter", state.filt ? "on" : "off", d => setCheck("f-on", !state.filt)]);
   if (state.filt) it.push(["Filter position", filterLabel(), d => setRange("f-z", state.fz + 0.01 * d)]);
-  if (sky) it.push(["Split halos | " + (MATTER.kind === "web" ? "web" : "dark matter"), state.split ? "on" : "off", d => setCheck("split-on", !state.split)]);
-  it.push(["Go to", views[xrView % views.length][0] + "  (A / trigger: go)", d => { xrView = (xrView + views.length + d) % views.length; }, fw => xrGo(xrView % views.length, fw)],
-          ["Exit VR", "", null, () => XR.session.end()]);
+  it.push(["Split halos | " + (!sky || MATTER.kind === "web" ? "web" : "dark matter"), state.split ? "on" : "off", d => setCheck("split-on", !state.split)]);
+  if (state.split) it.push(["Split position", state.splitPos.toFixed(2), d => setRange("f-split", state.splitPos + 0.05 * d)]);
+  if (!sky) it.push(["Go to", views[xrView % views.length][0] + "  (A / trigger: go)", d => { xrView = (xrView + views.length + d) % views.length; }, fw => xrGo(xrView % views.length, fw)]);
+  it.push(["Exit VR", "", null, () => XR.session.end()]);
   return it;
 }
 const filterLabel = () => "z = " + (slabs.length ? slabs[slabWanted()].z : filterWindow().z).toFixed(2);
@@ -1848,62 +1852,62 @@ function xrSetMode(m) {                                    // sky -> fly keeps e
   if (m === "fly" && XR.head) XR.origin = mApply(XR.M, XR.head).map(x => -state.vrScale * x);
   else XR.origin = state.pos.slice();
 }
+const MENU_ROWS = 14;
 function drawMenu() {
   if (XP.page === "help") return drawHelp();
   const c = XP.ctx, W = XP.canvas.width, H = XP.canvas.height, items = menuItems();
   c.clearRect(0, 0, W, H); c.fillStyle = "rgba(10, 14, 24, 0.86)"; c.beginPath(); c.roundRect(0, 0, W, H, 28); c.fill();
   c.fillStyle = "#e8c66a"; c.font = "600 44px sans-serif"; c.fillText("Eä Explorer", 40, 66);
   c.font = "26px sans-serif"; c.fillStyle = "#9aa6bb"; c.fillText("right stick: choose (up/down), change (left/right) · A or trigger: go · B: close", 330, 64);
-  items.forEach(([lab, val], i) => {
-    const y = 112 + i * Math.min(58, 800 / items.length);
-    if (i === XP.sel) { c.fillStyle = "rgba(232, 198, 106, 0.22)"; c.fillRect(24, y - 36, W - 48, Math.min(54, 800 / items.length)); }
-    c.fillStyle = i === XP.sel ? "#ffffff" : "#d0d6e2"; c.font = `${Math.min(34, Math.round(0.6 * 800 / items.length))}px sans-serif`; c.fillText(lab, 48, y);
+  // at most MENU_ROWS rows, scrolled to keep the selection in view
+  XP.sel = Math.min(XP.sel, items.length - 1);
+  const first = Math.max(0, Math.min(XP.sel - (MENU_ROWS >> 1), items.length - MENU_ROWS));
+  items.slice(first, first + MENU_ROWS).forEach(([lab, val], j) => {
+    const i = first + j, y = 136 + j * 56;
+    if (i === XP.sel) { c.fillStyle = "rgba(232, 198, 106, 0.22)"; c.fillRect(24, y - 38, W - 48, 52); }
+    c.fillStyle = i === XP.sel ? "#ffffff" : "#d0d6e2"; c.font = "32px sans-serif"; c.fillText(lab, 48, y);
     c.fillStyle = "#e8c66a"; c.fillText(val, 600, y);
   });
+  c.fillStyle = "#9aa6bb"; c.font = "24px sans-serif"; c.textAlign = "center";
+  if (first > 0) c.fillText("▲ more", W / 2, 100);
+  if (first + MENU_ROWS < items.length) c.fillText("▼ more", W / 2, H - 22);
+  c.textAlign = "left";
   return true;
 }
-// the controller guide: both controllers seen from above, then what each control does in sky and fly mode (the current
-// one highlighted)
+// the controller guide: both controllers seen from above, each control numbered; under each, what the numbers do in
+// the current mode (the other mode's use in grey when it differs). Trigger and grip are on the underside (dashed).
+const CTRL_NUM = { stick: 1, press: 1, trig: 2, grip: 3, up: 4, low: 5 };
 function drawController(c, cx, cy, hand) {
   const s = hand === "left" ? 1 : -1, [up, low] = hand === "left" ? ["Y", "X"] : ["B", "A"];   // s: towards the other hand
   c.lineWidth = 3; c.strokeStyle = "#6b7896"; c.fillStyle = "#1c2333";
-  c.beginPath(); c.roundRect(cx - 36, cy + 70, 72, 120, 30); c.fill(); c.stroke();                          // handle
+  c.setLineDash([8, 6]);                                                                                      // underside
+  c.fillStyle = "rgba(232, 198, 106, 0.25)"; c.strokeStyle = "#e8c66a"; c.beginPath(); c.roundRect(cx - 24, cy - 122, 48, 34, 10); c.fill(); c.stroke();   // trigger (index finger, at the front)
+  c.setLineDash([]); c.strokeStyle = "#6b7896"; c.fillStyle = "#1c2333";
+  c.beginPath(); c.roundRect(cx - 30, cy + 70, 60, 120, 26); c.fill(); c.stroke();                          // handle
   c.beginPath(); c.arc(cx, cy, 95, 0, 2 * Math.PI); c.fill(); c.stroke();                                     // face
-  c.fillStyle = "#e8c66a"; c.beginPath(); c.roundRect(cx - 24, cy + 92, 48, 22, 8); c.fill();                // trigger (index finger)
-  c.fillStyle = "#7fb0ff"; c.beginPath(); c.roundRect(cx + s * 20 - 9, cy + 125, 18, 52, 8); c.fill();        // grip (middle finger)
-  const btn = (x, y, r, fill, txt) => { c.fillStyle = fill; c.beginPath(); c.arc(x, y, r, 0, 2 * Math.PI); c.fill(); c.stroke();
-    if (txt) { c.fillStyle = "#ffffff"; c.font = "600 24px sans-serif"; c.textAlign = "center"; c.fillText(txt, x, y + 8); c.textAlign = "left"; } };
+  c.setLineDash([8, 6]); c.strokeStyle = "#7fb0ff"; c.beginPath(); c.roundRect(cx + s * 30 - 10, cy + 112, 20, 60, 8); c.stroke(); c.setLineDash([]);   // grip (middle finger, under the handle)
+  const btn = (x, y, r, fill, txt) => { c.fillStyle = fill; c.strokeStyle = "#6b7896"; c.beginPath(); c.arc(x, y, r, 0, 2 * Math.PI); c.fill(); c.stroke();
+    if (txt) { c.fillStyle = "#ffffff"; c.font = "600 22px sans-serif"; c.textAlign = "center"; c.fillText(txt, x, y + 8); c.textAlign = "left"; } };
   btn(cx - s * 38, cy - 8, 32, "#2c3550"); btn(cx - s * 38, cy - 8, 14, "#46516e");                      // stick
   btn(cx + s * 42, cy - 42, 21, "#3a4560", up); btn(cx + s * 48, cy + 22, 21, "#3a4560", low);
-  const lab = (x0, y0, x1, y1, txt) => { c.strokeStyle = "#9aa6bb"; c.lineWidth = 1.5; c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
-    c.fillStyle = "#d0d6e2"; c.font = "22px sans-serif"; c.textAlign = x1 < x0 ? "right" : "left"; c.fillText(txt, x1 + (x1 < x0 ? -8 : 8), y1 + 7); c.textAlign = "left"; };
-  lab(cx - s * 60, cy - 30, cx - s * 140, cy - 95, "stick (also press)");
-  lab(cx - s * 24, cy + 103, cx - s * 140, cy + 125, "trigger (index)");
-  lab(cx + s * 29, cy + 150, cx + s * 120, cy + 175, "grip (middle)");
-  c.fillStyle = "#e8c66a"; c.font = "600 30px sans-serif"; c.textAlign = "center"; c.fillText(hand === "left" ? "Left" : "Right", cx, cy - 115); c.textAlign = "left";
+  const badge = (x, y, n) => { c.fillStyle = "#e8c66a"; c.beginPath(); c.arc(x, y, 15, 0, 2 * Math.PI); c.fill();
+    c.fillStyle = "#10141f"; c.font = "700 20px sans-serif"; c.textAlign = "center"; c.fillText(n, x, y + 7); c.textAlign = "left"; };
+  badge(cx - s * 96, cy - 30, 1); badge(cx - s * 46, cy - 118, 2); badge(cx + s * 62, cy + 150, 3);
+  badge(cx + s * 86, cy - 54, 4); badge(cx + s * 92, cy + 14, 5);
+  c.fillStyle = "#e8c66a"; c.font = "600 30px sans-serif"; c.textAlign = "center"; c.fillText(hand === "left" ? "Left hand" : "Right hand", cx, cy - 150); c.textAlign = "left";
 }
 function drawHelp() {
   const c = XP.ctx, W = XP.canvas.width, H = XP.canvas.height, sky = state.mode === "sky";
   c.clearRect(0, 0, W, H); c.fillStyle = "rgba(10, 14, 24, 0.9)"; c.beginPath(); c.roundRect(0, 0, W, H, 28); c.fill();
   c.fillStyle = "#e8c66a"; c.font = "600 44px sans-serif"; c.fillText("Controllers", 40, 66);
-  c.font = "26px sans-serif"; c.fillStyle = "#9aa6bb"; c.fillText("you are in " + (sky ? "sky" : "fly") + " mode (highlighted)", 330, 64);
-  drawController(c, 330, 250, "left"); drawController(c, 950, 250, "right");
-  const wrap = (txt, x, y, w) => {                         // up to two lines
-    const words = txt.split(" "); let line = "", n = 0;
-    for (const wd of words) { const t = line ? line + " " + wd : wd; if (c.measureText(t).width > w && line) { c.fillText(line, x, y + 26 * n++); line = wd; } else line = t; }
-    c.fillText(line, x, y + 26 * n);
-  };
+  c.font = "26px sans-serif"; c.fillStyle = "#9aa6bb"; c.fillText((sky ? "sky" : "fly") + " mode · dashed: trigger and grip, under the controller", 330, 64);
   [["left", 0], ["right", 640]].forEach(([hand, x0]) => {
-    const cols = [x0 + 30, x0 + 170, x0 + 400], top = 480, rh = 60;
-    c.fillStyle = "rgba(232, 198, 106, 0.12)"; c.fillRect(cols[sky ? 1 : 2] - 8, top - 30, 222, rh * 6 + 44);
-    c.font = "600 24px sans-serif";
-    c.fillStyle = sky ? "#e8c66a" : "#6b7896"; c.fillText("Sky", cols[1], top);
-    c.fillStyle = sky ? "#6b7896" : "#e8c66a"; c.fillText("Fly", cols[2], top);
-    CTRL_HELP[hand].forEach(([k, a, b], i) => {
-      const y = top + 42 + i * rh;
-      c.font = "600 22px sans-serif"; c.fillStyle = "#ffffff"; c.fillText(k, cols[0], y);
-      c.font = "22px sans-serif"; c.fillStyle = sky ? "#e8eef8" : "#8792a8"; wrap(a, cols[1], y, 206);
-      c.fillStyle = sky ? "#8792a8" : "#e8eef8"; wrap(b, cols[2], y, 206);
+    drawController(c, x0 + 320, 270, hand);
+    CTRL_HELP[hand].forEach(([k, how, a, b], i) => {
+      const y = 500 + i * 58, now = sky ? a : b, other = sky ? b : a;
+      c.fillStyle = "#e8c66a"; c.font = "700 22px sans-serif"; c.fillText(String(CTRL_NUM[k]) + (how ? " " + how : ""), x0 + 40, y);
+      c.fillStyle = "#ffffff"; c.font = "24px sans-serif"; c.fillText(now, x0 + 130, y);
+      if (other !== now) { c.fillStyle = "#7d889e"; c.font = "18px sans-serif"; c.fillText((sky ? "fly: " : "sky: ") + other, x0 + 130, y + 22); }
     });
   });
   c.fillStyle = "#9aa6bb"; c.font = "24px sans-serif"; c.textAlign = "center";
@@ -1972,6 +1976,13 @@ async function enterVR() {
   $("vr-btn").textContent = "Exit VR"; $("vr-float").hidden = true;
   session.requestAnimationFrame(xrFrame);
 }
+// sky triggers: the weak-lensing deflection factor, continuous (a full pull: x10 in 1.5 s; x1 to x100), turning the
+// deflection on (live rendering) when it is off
+function xrDeflect(d) {
+  if (!state.lens.weak) { if (d < 0) return; if (state.render !== "live") setRender("live"); setCheck("l-on", true); }
+  setRange("l-amp", Math.log10(state.lens.ampX || 1) + d / 1.5);
+  toastKeep(`Deflection ×${(state.lens.ampX || 1).toPrecision(2)}`);
+}
 function xrInput(session, dt, hm) {
   const gaze = mApply(XR.M, [-hm[8], -hm[9], -hm[10]]), side = mApply(XR.M, [hm[0], hm[1], hm[2]]), sky = state.mode === "sky";
   for (const src of session.inputSources) {
@@ -1993,36 +2004,34 @@ function xrInput(session, dt, hm) {
       }
       continue;
     }
+    const trig = gp.buttons[0].value > 0.05 ? gp.buttons[0].value : 0, roomUp = mApply(XR.M, [0, 1, 0]);
     if (hand === "right") {
       if (down(4)) { xrSetMode(sky ? "fly" : "sky"); toast(sky ? "Fly mode" : "Sky mode"); }
       if (down(5)) { XP.menu = true; XP.page = "menu"; XP.sel = 0; XP.dirty = true; XP.quad = placePanel(hm, 1.3, 1.2, 0.9, 0.15); }
-      if (down(3)) { if (sky) { if (state.render !== "live") setRender("live"); const on = !state.lens.weak; setCheck("l-on", on); toast("Lensing " + (on ? "on (live rendering; weak only in VR)" : "off")); }
+      if (down(3)) { if (sky) { if (state.render !== "live") setRender("live"); const on = !state.lens.weak; setCheck("l-on", on); toast("Lensing deflection " + (on ? "on" : "off")); }
                      else { document.querySelector('[data-go="observer"]').click(); XR.origin = [0, 0, 0]; toast("Back to the observer"); } }
       if (b[1]) setRange("exp", state.expo + 0.8 * dt);
       if (sky) {
         if (dz(ay)) XR.zoom = Math.min(XR_ZMAX, Math.max(1, XR.zoom * Math.exp(-1.5 * ay * dt)));
         if (dz(ax) && state.render === "live") setRange("size", state.size + 0.8 * ax * dt);
-        if (down(0)) { xrView = (xrView + 1) % SKY_VIEWS.length; xrGo(xrView, gaze); }
+        if (trig) xrDeflect(trig * dt);
       } else {
         if (dz(ay)) { state.speed = Math.max(0.5, Math.min(20000, state.speed * Math.exp(-ay * dt))); toastKeep(`Speed ${state.speed.toPrecision(3)} Mpc/h/s`); }
         if (dz(ax) && state.filt) setRange("f-z", state.fz + 0.12 * ax * dt);
-        if (gp.buttons[0].value > 0.05) for (let i = 0; i < 3; i++) XR.origin[i] += gp.buttons[0].value * state.speed * dt * gaze[i];
+        if (trig) for (let i = 0; i < 3; i++) XR.origin[i] += trig * SIDE_K * state.speed * dt * roomUp[i];          // up
       }
     } else {
-      if (down(5)) { if (sky && state.render === "pre") toast("Halo colours: live rendering only");
-                     else { $(state.colour === 0 ? "c-z" : "c-phys").click(); toast("Halo colour: " + (state.colour === 0 ? "σv and z" : "redshift")); } }
-      if (down(4)) { if (sky) { toggleRange("w-dm"); toast((MATTER.kind === "web" ? "Cosmic web " : "Dark matter ") + (state.w.dm > 0 ? "on" : "off")); }
-                     else { toggleRange("w-dm"); toast("Cosmic web " + (state.w.dm > 0 ? "on" : "off")); } }
+      if (down(5)) { setCheck("f-on", !state.filt); toast("Redshift filter " + (state.filt ? "on" : "off")); }
+      if (down(4)) { setCheck("split-on", !state.split); toast("Split view " + (state.split ? "on" : "off")); }
       if (down(3)) { XR.M = xrBasis(); XR.zoom = 1; if (!sky) XR.origin = state.pos.slice(); toast("View reset"); }
       if (b[1]) setRange("exp", state.expo - 0.8 * dt);
       if (sky) {
         if (dz(ay) && state.filt) setRange("f-z", state.fz - 0.12 * ay * dt);
         if (dz(ax) && state.split) setRange("f-split", state.splitPos + 0.4 * ax * dt);
-        if (down(0)) { xrView = (xrView + SKY_VIEWS.length - 1) % SKY_VIEWS.length; xrGo(xrView, gaze); }
+        if (trig) xrDeflect(-trig * dt);
       } else {
         const v = state.speed * dt;
-        for (let i = 0; i < 3; i++) XR.origin[i] += -dz(ay) * v * gaze[i] + dz(ax) * v * side[i];
-        if (gp.buttons[0].value > 0.05) for (let i = 0; i < 3; i++) XR.origin[i] -= gp.buttons[0].value * state.speed * dt * gaze[i];
+        for (let i = 0; i < 3; i++) XR.origin[i] += -dz(ay) * v * gaze[i] + SIDE_K * (dz(ax) * side[i] - trig * roomUp[i]) * v;   // trigger: down
       }
     }
   }
