@@ -1,0 +1,1402 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<script>window.EAVIZ_DATA = "https://ea-visu.web.data-2-osu.iap.fr/data/";</script>
+<meta charset="utf-8">
+<title>Eä Explorer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600&family=JetBrains+Mono:wght@400&display=swap">
+<style>
+/* One deliberate dark look (a night sky); controls in a collapsible side panel, numbers in a bottom HUD. */
+:root {
+  color-scheme: dark;
+  --ground: #05070b; --panel: rgba(14, 17, 24, 0.86); --rule: #263040; --ink: #e8e5dc; --mute: #9aa1ae; --gold: #d6b062;
+  --body: "Source Sans 3", "Segoe UI", system-ui, sans-serif; --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+html, body { height: 100%; }
+body { margin: 0; background: var(--ground); color: var(--ink); font: 400 14px/1.45 var(--body); overflow: hidden; }
+canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+canvas.drag { cursor: grabbing; }
+#panel { position: fixed; top: calc(12px + env(safe-area-inset-top, 0px)); left: 12px; width: min(300px, calc(100vw - 24px));
+  max-height: calc(100% - 120px); overflow: auto; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
+  padding: 12px 14px; display: grid; gap: 10px; backdrop-filter: blur(6px); }
+#panel[data-collapsed="1"] > :not(header) { display: none; }
+#panel header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+#panel h1 { font: 600 1.05rem var(--body); margin: 0; letter-spacing: 0.02em; }
+#panel h2 { font: 600 0.7rem var(--body); letter-spacing: 0.14em; text-transform: uppercase; color: var(--gold); margin: 6px 0 4px; }
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; }
+.seg button { all: unset; text-align: center; padding: 6px 0; cursor: pointer; color: var(--mute); font-weight: 600; font-size: 0.85rem; }
+.seg button[aria-pressed="true"] { background: #1d2532; color: var(--ink); }
+.row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 10px; }
+.row label { color: var(--ink); }
+input[type=range] { width: 100%; accent-color: var(--gold); grid-column: 1 / -1; }
+.out { font: 400 0.78rem var(--mono); color: var(--mute); }
+.btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.btns button, #collapse { font: 600 0.8rem var(--body); color: var(--ink); background: #1b2230; border: 1px solid var(--rule); border-radius: 4px; padding: 5px 9px; cursor: pointer; }
+.btns button:hover, #collapse:hover { border-color: var(--gold); }
+.hint { color: var(--mute); font-size: 0.82rem; margin: 0; }
+section[hidden], .only-sky[hidden], .only-fly[hidden] { display: none !important; }
+#hud { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(to top, rgba(5, 7, 11, 0.9), rgba(5, 7, 11, 0)); font: 400 0.85rem var(--mono); color: var(--ink);
+  display: flex; flex-wrap: wrap; gap: 4px 22px; pointer-events: none; font-variant-numeric: tabular-nums; }
+#hud span b { color: var(--gold); font-weight: 400; }
+#gridlab { position: fixed; right: 16px; bottom: calc(44px + env(safe-area-inset-bottom, 0px)); width: 170px; text-align: center;
+  font: 400 0.72rem var(--mono); color: var(--mute); pointer-events: none; }
+#load { position: fixed; right: 14px; top: calc(12px + env(safe-area-inset-top, 0px)); font: 400 0.8rem var(--mono); color: var(--mute); }
+.mark { position: fixed; transform: translate(-50%, -50%); pointer-events: none; display: grid; justify-items: center; gap: 4px; }
+[hidden] { display: none !important; }
+.mark i { width: 22px; height: 22px; border: 1.5px solid var(--gold); border-radius: 50%; box-shadow: 0 0 6px rgba(0, 0, 0, 0.8); }
+.mark span { font: 600 0.78rem var(--body); color: var(--ink); text-shadow: 0 0 4px #000, 0 0 2px #000; white-space: nowrap; }
+.lab { font-size: 0.85rem; color: var(--ink); }
+#err { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; }
+html, body { height: 100%; margin: 0; }
+</style>
+
+<canvas id="gl" aria-label="Eä light-cone"></canvas>
+<aside id="panel" aria-label="Controls">
+  <header><h1>Eä Explorer</h1><button id="collapse" aria-expanded="true">Hide</button></header>
+  <div class="seg" role="group" aria-label="Mode">
+    <button id="m-sky" aria-pressed="true">Sky</button><button id="m-fly" aria-pressed="false">Fly</button>
+  </div>
+
+  <h2>Layers</h2>
+  <div class="row"><label for="w-ha">Halos</label><span class="out" id="o-ha"></span><input id="w-ha" type="range" min="0" max="1" step="0.01" value="1"></div>
+  <div class="row"><label for="w-dm">Dark matter</label><span class="out" id="o-dm"></span><input id="w-dm" type="range" min="0" max="1" step="0.01" value="0"></div>
+  <div class="row only-sky"><label for="w-mw">Milky Way</label><span class="out" id="o-mw"></span><input id="w-mw" type="range" min="0" max="1" step="0.01" value="1"></div>
+  <div class="row only-sky"><label for="w-cmb">CMB</label><span class="out" id="o-cmb"></span><input id="w-cmb" type="range" min="0" max="1" step="0.01" value="0"></div>
+  <div class="row only-fly" hidden><label for="cmbbg">CMB sphere</label><input id="cmbbg" type="checkbox" checked></div>
+
+  <h2>Halo colour</h2>
+  <div class="seg" role="group" aria-label="Halo colour">
+    <button id="c-phys" aria-pressed="true" title="Blackbody set by the velocity dispersion, observed at T/(1+z)">σ<sub>v</sub> and z</button><button id="c-z" aria-pressed="false" title="Hue by redshift only">Redshift</button>
+  </div>
+  <div class="row"><label for="exp">Halo exposure</label><span class="out" id="o-exp"></span><input id="exp" type="range" min="-3" max="3" step="0.05" value="-1.4"></div>
+  <div class="row"><label for="size">Halo size</label><span class="out" id="o-size"></span><input id="size" type="range" min="0.3" max="3" step="0.05" value="1"></div>
+  <div class="row"><label for="dm-lo">DM level (auto ±)</label><span class="out" id="o-dmlo"></span><input id="dm-lo" type="range" min="-2" max="2" step="0.05" value="0"></div>
+
+  <div class="row"><label for="fov">Field of view</label><span class="out" id="o-fov"></span><input id="fov" type="range" min="-2.2" max="2.08" step="0.01" value="1.845"></div>
+
+  <div class="only-sky">
+  <div id="hires-row" hidden><div class="row"><span class="lab" title="6144-px faces (0.9' per pixel), on the website only: needs ~1.2 GB of graphics memory (desktop GPUs; 'failed' otherwise, the standard image stays). 'Lensed' bakes the true weak lensing (each halo deflected at its own distance, 1-6'); Einstein rings (< 1') stay below a pixel">Sky halo image</span></div>
+  <div class="btns"><button data-hires="">Standard</button><button data-hires="hires/sky_halos">Hi-res</button><button data-hires="hires/sky_halos_lensed">Hi-res lensed</button></div></div>
+  <h2>Lensing</h2>
+  <div class="row"><label for="l-on" title="Every halo, dark-matter sample and the CMB deflected at its own distance (Born maps from the observer)">Weak lensing</label><input id="l-on" type="checkbox"></div>
+  <div class="row"><label for="l-amp" title="The deflections (a few arcmin) multiplied by this factor">Deflection ×</label><span class="out" id="o-lamp"></span><input id="l-amp" type="range" min="0" max="2" step="0.02" value="0"></div>
+  <div class="row"><label for="l-st" title="Clusters as isothermal spheres bend the light of the halos behind them; zoom in (Z / X, the wheel, or pinch) on a massive cluster to see the arcs">Strong lensing</label><input id="l-st" type="checkbox"></div>
+  <div class="row"><label for="l-ss" title="The halo glows are 1-3' across, wider than any Einstein ring (< 1'): at their true size (1) they are only bent; smaller, they form arcs and rings">Lensed halo size</label><span class="out" id="o-lss"></span><input id="l-ss" type="range" min="-2" max="0" step="0.02" value="-1"></div>
+  <div class="row"><span class="lab" title="Turns strong lensing on and zooms on a cluster with a halo almost exactly behind it">Einstein rings</span></div>
+  <div class="btns"><button data-ring="ring1">Ring 1</button><button data-ring="ring2">Ring 2</button><button data-ring="ring3">Ring 3</button><button data-ring="massive">Most massive</button></div>
+  <div class="row"><label for="l-k" title="The convergence map, for sources at the distance chosen below">Convergence κ</label><span class="out" id="o-lk"></span><input id="l-k" type="range" min="0" max="1" step="0.01" value="0"></div>
+  <div class="row"><label for="l-wh">Shear whiskers</label><input id="l-wh" type="checkbox"></div>
+  <div class="row"><label for="l-src" title="Convergence and shear depend on the distance of the sources they distort">κ and γ for sources at</label><span class="out" id="o-lsrc"></span><input id="l-src" type="range" min="0" max="1" step="0.005" value="0.43"></div>
+  </div>
+  <h2>Virtual reality</h2>
+  <div class="row"><label for="vr-scale" title="Your head movements and eye separation, scaled: 1 m in the headset = this many Mpc/h">VR scale (Mpc/h per m)</label><span class="out" id="o-vrs"></span><input id="vr-scale" type="range" min="-1" max="3" step="0.05" value="1"></div>
+  <div class="btns" id="vr-row" hidden><button id="vr-btn">Enter VR</button></div>
+  <h2>Region of interest</h2>
+  <div class="seg" role="group" aria-label="Region of interest">
+    <button id="r-all" aria-pressed="true">All</button><button id="r-ews" aria-pressed="false" title="|b| > 23°, |β| > 10°, 0.84 < z < 1.88">Euclid</button><button id="r-sil" aria-pressed="false" title="b > 23°, 0.84 < z < 1.88">Silmarilli</button>
+  </div>
+  <div class="only-sky">
+    <h2>Overlays</h2>
+    <div class="row"><label for="ov-plane">Galactic plane, |b| = 23°</label><input id="ov-plane" type="checkbox"></div>
+    <div class="row"><label for="ov-ecl">Ecliptic, |β| = 10°</label><input id="ov-ecl" type="checkbox"></div>
+    <div class="row"><label for="ov-ews">Euclid region edge</label><input id="ov-ews" type="checkbox"></div>
+  </div>
+
+  <h2>Redshift filter (Hα, R = 100)</h2>
+  <div class="row"><label for="f-on">Filter on</label><input id="f-on" type="checkbox"></div>
+  <div class="row"><label for="f-z">Position</label><span class="out" id="o-z"></span><input id="f-z" type="range" min="0" max="1" step="0.001" value="0.3"></div>
+  <div class="row"><label for="split-on">Split halos | dark matter</label><input id="split-on" type="checkbox"></div>
+  <div class="row"><label for="f-split">Split position</label><span class="out" id="o-split"></span><input id="f-split" type="range" min="0" max="1" step="0.01" value="0.5"></div>
+  <div class="row"><label for="grid-on">Comoving grid (shrinks with a)</label><input id="grid-on" type="checkbox" checked></div>
+
+  <section id="fly-ctl" hidden>
+    <h2>Go to</h2>
+    <div class="btns"><button data-go="observer">Observer</button><button data-go="hero">Hero cluster</button><button data-go="massive">Most massive halo</button><button data-go="void">Deepest void</button><button data-go="outside">Outside Eä</button></div>
+    <p class="hint">Drag to look. W/S or ↑/↓ forward and back, A/D strafe, Space up, left Shift down (or R/F); wheel changes speed (log); hold Q for ×10.</p>
+  </section>
+  <p class="hint only-sky">Drag to look around, wheel to zoom. Galactic axes (x → Galactic centre, z → north Galactic pole).</p>
+</aside>
+<div id="load" role="status"></div>
+<div id="gridlab"></div>
+<div id="marks"></div>
+<div id="hud" aria-live="off"></div>
+
+<script>
+(() => {
+"use strict";
+const DATA = window.EAVIZ_DATA || "data/";
+// Einstein rings: clusters with an Eä halo within 5 % of their Einstein radius behind them (theta_E = 19", 20", 22")
+const RINGS = { ring1: [798.5425, -21.2666, 383.0029], ring2: [7.9736, -1097.5503, -256.3423], ring3: [329.4419, 231.0176, 116.5806] };
+const SBS = location.hash.includes("sbs");     // desktop stereo preview (#sbs): left eye left, right eye right
+const XR = { session: null, ref: null, T: null, last: 0 };   // WebXR session (immersive VR)
+const canvas = document.getElementById("gl");
+const gl = canvas.getContext("webgl2", { antialias: false, premultipliedAlpha: false });
+const hud = document.getElementById("hud"), loadEl = document.getElementById("load"), gridLab = document.getElementById("gridlab");
+if (!gl) { document.body.insertAdjacentHTML("beforeend", '<div id="err"><p>This page needs WebGL 2 (a recent Firefox, Chrome or Safari).</p></div>'); return; }
+const hasFloatFB = !!gl.getExtension("EXT_color_buffer_float");
+gl.getExtension("EXT_float_blend");
+const MAXPT = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)[1];
+
+// ---------------------------------------------------------------- cosmology (flat LCDM, Eä: Om = 0.311, h = 0.677)
+const OM = 0.311, OL = 1 - OM, C = 2997.92458, CHI_LSS = 9392, R_EA = 5702.6, TH = 977.79 / 67.7;   // 1/H0 in Gyr
+const zs = [], chis = [];
+{ let chi = 0, z = 0; const dz = 0.0005; zs.push(0); chis.push(0);
+  while (z < 20) { const E1 = Math.sqrt(OM * (1 + z) ** 3 + OL), E2 = Math.sqrt(OM * (1 + z + dz) ** 3 + OL);
+    chi += 0.5 * dz * (C / E1 + C / E2); z += dz; zs.push(z); chis.push(chi); } }
+function zOfChi(c) { let lo = 0, hi = chis.length - 1; if (c >= chis[hi]) return zs[hi];
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (chis[m] < c) lo = m; else hi = m; }
+  return zs[lo] + (zs[hi] - zs[lo]) * (c - chis[lo]) / (chis[hi] - chis[lo]); }
+function chiOfZ(z) { const i = Math.min(zs.length - 2, Math.floor(z / 0.0005)); const t = z / 0.0005 - i; return chis[i] + t * (chis[i + 1] - chis[i]); }
+const ageGyr = z => 2 * TH / (3 * Math.sqrt(OL)) * Math.asinh(Math.sqrt(OL / OM) * Math.pow(1 + z, -1.5));
+const AGE0 = ageGyr(0);
+
+// ---------------------------------------------------------------- GL helpers
+function shader(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s) + "\n" + src.slice(0, 200)); return s; }
+function program(vs, fs) { const p = gl.createProgram(); gl.attachShader(p, shader(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, shader(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) { const a = gl.getActiveUniform(p, i); u[a.name] = gl.getUniformLocation(p, a.name); }
+  return { p, u }; }
+function lut1d(unit, data, internal, format, type, n, filter) {
+  const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, internal, n, 1, 0, format, type, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t; }
+
+const QUAD_VS = `#version 300 es
+in vec2 p; out vec2 v; void main() { v = p; gl_Position = vec4(p, 0.0, 1.0); }`;
+
+// Equirect (Galactic, l = 0 at the centre, l increasing to the left, b = +90 at the top) -> cube-map face.
+// Sampled at level 0 so the longitude seam and the poles carry no mip artefacts; the cube map is mipmapped after.
+const FACE_FS = `#version 300 es
+precision highp float;
+in vec2 v; out vec4 o;
+uniform sampler2D src; uniform vec3 fx, fy, fz;
+const float PI = 3.14159265;
+void main() {
+  vec3 d = normalize(fz + v.x * fx + v.y * fy);
+  vec2 uv = vec2(0.5 - atan(d.y, d.x) / (2.0 * PI), 0.5 - asin(clamp(d.z, -1.0, 1.0)) / PI);
+  o = textureLod(src, uv, 0.0);
+}`;
+
+// Shared point-shader code: camera, filter window in chi, region of interest, split side.
+const PT_COMMON = `
+uniform mat3 rotT; uniform vec3 cam, nep; uniform float focal, Wpx, H, chiLo, chiHi, roi, maxPt;
+uniform vec4 proj;          // ndc = (proj.x x/z + proj.y, proj.z y/z + proj.w): any (also asymmetric, VR) frustum
+uniform sampler2D zlut;   // z(chi) over [0, 6000] Mpc/h
+float zOf(float chi) { return texture(zlut, vec2(clamp(chi / 6000.0, 0.0, 1.0), 0.5)).r; }
+float roiWeight(vec3 p, float chi) {
+  if (roi < 0.5) return 1.0;
+  float b = degrees(asin(p.z / chi)), be = degrees(asin(dot(p, nep) / chi));
+  bool zin = chi > 1970.0 && chi < 3540.0;                    // 0.84 < z < 1.88 (H-alpha in NISP)
+  bool inside = roi < 1.5 ? (abs(b) > 23.0 && abs(be) > 10.0 && zin) : (b >= 23.0 && zin);
+  return inside ? 1.0 : 0.0;                                   // outside the region: removed
+}
+bool cull(vec3 r, float chi) { return r.z < 0.05 || chi < chiLo || chi > chiHi; }
+
+// ---- lensing. Weak: the deflection of a source at distance chi seen from the observer, interpolated (linearly in chi,
+// 0 at the observer) between the source planes of lens_planes.png (Born maps of the Eä shells). Strong: singular
+// isothermal spheres (the lens catalogue, largest Einstein radii in view), distances measured from the camera.
+uniform sampler2D lensAtlas; uniform float lensAmp; uniform int lpN; uniform float lpChi[12]; uniform float lpAmax[12];
+uniform vec4 sLens[32]; uniform int sN;
+vec3 lpAlpha(vec3 n, int i) {
+  float u = 0.5 + atan(n.y, n.x) / 6.28318531;
+  float vv = clamp(0.5 - asin(clamp(n.z, -1.0, 1.0)) / 3.14159265, 0.002, 0.998);
+  vec3 c = textureLod(lensAtlas, vec2(u, (float(i) + vv) / float(lpN)), 0.0).rgb;
+  return (c * 255.0 - 128.0) / 127.0 * lpAmax[i];
+}
+vec3 weakAlpha(vec3 n, float chi) {
+  if (lensAmp <= 0.0 || lpN == 0) return vec3(0.0);
+  int i = lpN - 1;
+  for (int k = 0; k < 12; k++) { if (k < lpN && chi <= lpChi[k]) { i = k; break; } }
+  if (i == 0) return lpAlpha(n, 0) * clamp(chi / lpChi[0], 0.0, 1.0) * lensAmp;
+  float c0 = lpChi[i - 1], c1 = lpChi[i];
+  return mix(lpAlpha(n, i - 1), lpAlpha(n, i), clamp((chi - c0) / (c1 - c0), 0.0, 1.0)) * lensAmp;
+}
+uniform sampler2D kgAtlas; uniform vec3 kgSc[12]; uniform float kgOn;   // (g_max, k_lo, k_hi) per plane
+vec3 kgPlane(vec3 n, int i) {                  // (gamma1, gamma2, kappa) of plane i
+  float u = 0.5 + atan(n.y, n.x) / 6.28318531;
+  float vv = clamp(0.5 - asin(clamp(n.z, -1.0, 1.0)) / 3.14159265, 0.002, 0.998);
+  vec3 c = textureLod(kgAtlas, vec2(u, (float(i) + vv) / float(lpN)), 0.0).rgb * 255.0;
+  return vec3((c.rg - 128.0) / 127.0 * kgSc[i].x, kgSc[i].y + (kgSc[i].z - kgSc[i].y) * c.b / 255.0);
+}
+vec3 kgAtChi(vec3 n, float chi) {
+  if (kgOn < 0.5 || lpN == 0) return vec3(0.0);
+  int i = lpN - 1;
+  for (int k = 0; k < 12; k++) { if (k < lpN && chi <= lpChi[k]) { i = k; break; } }
+  if (i == 0) return kgPlane(n, 0) * clamp(chi / lpChi[0], 0.0, 1.0);
+  float c0 = lpChi[i - 1], c1 = lpChi[i];
+  return mix(kgPlane(n, i - 1), kgPlane(n, i), clamp((chi - c0) / (c1 - c0), 0.0, 1.0));
+}
+const float FOURPI_C2 = 12.566370614 / (299792.458 * 299792.458);
+// Einstein radius (rad) of lens k for a source at camera distance ds; 0 if the source is not behind it
+float thetaE(int k, vec3 eye, float ds) {
+  float dl = length(sLens[k].xyz - eye);
+  return ds > dl ? FOURPI_C2 * sLens[k].w * sLens[k].w * (ds - dl) / ds : 0.0;
+}
+`;
+
+const HALO_VS = `#version 300 es
+precision highp float;
+in vec3 pos; in vec2 rl; in vec4 col;
+uniform float sizeK, expo, colourMode;
+uniform vec2 dRange; uniform float projScale;   // strong lensing: only halos at camera distances in dRange, wider frustum
+uniform sampler2D pal;    // redshift palette over z in [0, 6]
+${PT_COMMON}
+out vec3 vc; out float vratio; out vec4 vM; out float vStr;
+uniform float srcSize;      // strong lensing: halos behind the lenses drawn at this fraction of their true size
+uniform float lensSky;
+void main() {
+  float chi = length(pos);
+  vec3 P = pos; float mu = 1.0;
+  if (lensSky > 0.5 && lensAmp > 0.0) {                         // weak lensing at the halo's own distance (observer at 0)
+    vec3 n = P / chi; P = chi * normalize(n + weakAlpha(n, chi));
+  }
+  vec3 r = rotT * (P - cam);
+  float d = length(r);
+  if (cull(r, chi) || d < dRange.x || d >= dRange.y) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
+  float rv = sizeK * rl.x * (dRange.x > 0.0 ? srcSize : 1.0);
+  // weak-lensing distortion (sky mode): image offsets t map to source offsets A t, A = I - amp (kappa I + gamma),
+  // in the (e_theta, e_phi) basis; with the screen basis S of that tangent plane, a sprite pixel q samples the source
+  // profile at A S^-1 q (ellipses, stretched along the shear; area x 1/det A)
+  mat2 M = mat2(1.0); float stretch = 1.0;
+  if (lensSky > 0.5 && lensAmp > 0.0 && kgOn > 0.5) {
+    vec3 n = pos / chi;
+    vec3 kg = kgAtChi(n, chi) * lensAmp;
+    float th = acos(clamp(n.z, -1.0, 1.0)), ph = atan(n.y, n.x);
+    vec3 et = vec3(cos(th) * cos(ph), cos(th) * sin(ph), -sin(th)), ep = vec3(-sin(ph), cos(ph), 0.0);
+    vec2 st = (rotT * et).xy, sp = (rotT * ep).xy;
+    mat2 S = mat2(st, sp);
+    float k = clamp(kg.z, -0.6, 0.6); vec2 g = clamp(kg.xy, vec2(-0.6), vec2(0.6));
+    mat2 A = mat2(1.0 - k - g.x, -g.y, -g.y, 1.0 - k + g.x);
+    M = A * inverse(S);
+    float lmin = max(1.0 - abs(k) - length(g), 0.25);
+    stretch = min(1.0 / lmin, 4.0);
+  }
+  vM = vec4(M[0], M[1]); vStr = stretch;
+  float pxTrue = max(1.5, 2.0 * rv / d * focal / projScale);  // true diameter of the halo (2 R_vir) in pixels
+  float px = min(pxTrue * stretch, maxPt);                     // the sprite (enlarged for lensing stretch); capped
+  float flux = rl.y / (d * d) * expo * roiWeight(pos, chi) * mu;
+  float inside = smoothstep(0.3, 1.0, d / rv);                 // fade when the camera enters the halo
+  vec3 c = colourMode > 0.5 ? texture(pal, vec2(clamp(zOf(chi) / 6.0, 0.0, 1.0), 0.5)).rgb : col.rgb;
+  vc = c * c * flux * inside / (pxTrue * pxTrue * 0.25);       // surface brightness at the true scale
+  vratio = px / (pxTrue * stretch);
+  gl_Position = vec4((proj.x * r.x / r.z + proj.y) / projScale, (proj.z * r.y / r.z + proj.w) / projScale, 0.5, 1.0);
+  gl_PointSize = px;
+}`;
+const HALO_FS = `#version 300 es
+precision highp float;
+in vec3 vc; in float vratio; in vec4 vM; in float vStr; out vec4 o;
+uniform float splitX;
+void main() {
+  if (splitX >= 0.0 && gl_FragCoord.x > splitX) discard;       // split screen: halos on the left
+  vec2 q0 = gl_PointCoord * 2.0 - 1.0; if (dot(q0, q0) > 1.0) discard;
+  vec2 q = mat2(vM.xy, vM.zw) * (vec2(q0.x, -q0.y) * vStr);   // the source position of this pixel (sprite units)
+  float r2 = dot(q, q); if (r2 > 1.0) discard;
+  float x = sqrt(r2) * vratio * 5.0;                           // radius in units of r_s (c ~ 5), at the true scale
+  float w = 1.0 / (0.15 + x) / (1.0 + x) * (1.0 - smoothstep(0.8, 1.0, sqrt(r2) * vratio));
+  if (vratio < 1.0) w *= 1.0 - smoothstep(0.6, 1.0, sqrt(dot(q0, q0)));   // clamped at the size cap: fade instead of a hard disc
+  o = vec4(vc * w, 0.0); }`;
+
+const DM_VS = `#version 300 es
+precision highp float;
+in vec3 pos; in vec2 rw;
+${PT_COMMON}
+uniform float wUnit, rhoLo, rhoHi;
+out float vm; out float vratio; out vec3 vcol;
+// hue = distance from the eye (blue near, warm white ~300 Mpc/h, orange, red toward z = 6: the halos' redshift colours)
+const float HD[5] = float[5](1.0, 1.903, 2.477, 3.079, 3.653);   // log10 of 10, 80, 300, 1200, 4500 Mpc/h
+const vec3 HC[5] = vec3[5](vec3(.30, .50, 1.0), vec3(.55, .72, 1.0), vec3(1.0, .85, .58), vec3(1.0, .45, .15), vec3(.90, .18, .10));
+vec3 hueOf(float d) {
+  float x = log(max(d, 1.0)) / log(10.0);
+  if (x <= HD[0]) return HC[0];
+  for (int i = 0; i < 4; i++) if (x < HD[i + 1]) return mix(HC[i], HC[i + 1], (x - HD[i]) / (HD[i + 1] - HD[i]));
+  return HC[4];
+}
+void main() {
+  vec3 r = rotT * (pos - cam);
+  float chi = length(pos);
+  if (cull(r, chi)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
+  float d = length(r);
+  float cell = rw.x / 0.6;                                     // the stored radius is 0.6 cell
+  float lrho = log(max(rw.y * wUnit / (cell * cell * cell), 1e-6)) / log(10.0);
+  float s = clamp((lrho - rhoLo) / (rhoHi - rhoLo), 0.0, 1.0); // whiteness = density: knots white-hot, filaments keep the hue
+  vcol = mix(hueOf(d), vec3(1.0), s * s);
+  float pxTrue = max(2.0, 4.0 * rw.x / d * focal);             // +-1.5 sigma, sigma = 1.33 x the stored radius (0.8 cell)
+  float px = min(pxTrue, min(maxPt, 256.0));
+  // projected mass, dimmed with distance as in the film (1 / (1 + d / 150 Mpc/h)): the nearby web dominates
+  // x 1e3: keeps the accumulation inside half-float range, neither underflow nor overflow (auto-levels are scale-free)
+  vm = 1e3 * rw.y / (d * d) / (pxTrue * pxTrue) * roiWeight(pos, chi) * smoothstep(0.5, 2.0, d / rw.x) / (1.0 + d / 150.0);
+  vratio = px / pxTrue;
+  gl_Position = vec4(proj.x * r.x / r.z + proj.y, proj.z * r.y / r.z + proj.w, 0.5, 1.0);
+  gl_PointSize = px;
+}`;
+const DM_FS = `#version 300 es
+precision highp float;
+in float vm; in float vratio; in vec3 vcol; out vec4 o;
+uniform float splitX;
+void main() {
+  if (splitX >= 0.0 && gl_FragCoord.x < splitX) discard;       // split screen: dark matter on the right
+  vec2 q = gl_PointCoord * 2.0 - 1.0; float q2 = dot(q, q); if (q2 > 1.0) discard;   // round, also when clamped
+  float r2 = q2 * vratio * vratio;
+  // sprites clamped at the size cap (cells very close to the eye) fade out instead of showing a flat square
+  float m = vm * exp(-4.5 * r2) * 3.0 * (1.0 - smoothstep(0.7, 1.0, sqrt(q2))) * smoothstep(0.25, 0.9, vratio);
+  o = vec4(vcol * m, m); }`;
+
+// Dark matter as a volume: nested 256^3 grids of log10(1+delta) (make_dm_volume.py) packed four per 512x512x256
+// atlas, ray-marched with the step of the finest level at each sample. Emission = projected mass, mildly dimmed with
+// distance; hue = distance (as the film), white = density; dense knots partly hide what is behind them.
+const VOL_FS = `#version 300 es
+precision highp float; precision highp sampler3D;
+in vec2 v; out vec4 o;
+uniform sampler3D atl0, atl1, atl2;
+uniform vec4 lev[9];                  // lo.xyz, cell (Mpc/h); cell <= 0: not loaded. Slots 0-6 clipmap, 7-8 targets
+uniform vec2 levT[9];                 // log10(1+delta) -> scale x + offset: each level matched to the next finer one (no cube edges)
+uniform mat3 rot; uniform vec3 cam, nep; uniform vec4 proj; uniform float chiLo, chiHi, roi, logLo, logSpan, d0, kappa, splitX, thr, stepK, pxScale, lensSky;
+// ---- lensing. Weak: the deflection of a source at distance chi seen from the observer, interpolated (linearly in chi,
+// 0 at the observer) between the source planes of lens_planes.png (Born maps of the Eä shells). Strong: singular
+// isothermal spheres (the lens catalogue, largest Einstein radii in view), distances measured from the camera.
+uniform sampler2D lensAtlas; uniform float lensAmp; uniform int lpN; uniform float lpChi[12]; uniform float lpAmax[12];
+uniform vec4 sLens[32]; uniform int sN;
+vec3 lpAlpha(vec3 n, int i) {
+  float u = 0.5 + atan(n.y, n.x) / 6.28318531;
+  float vv = clamp(0.5 - asin(clamp(n.z, -1.0, 1.0)) / 3.14159265, 0.002, 0.998);
+  vec3 c = textureLod(lensAtlas, vec2(u, (float(i) + vv) / float(lpN)), 0.0).rgb;
+  return (c * 255.0 - 128.0) / 127.0 * lpAmax[i];
+}
+vec3 weakAlpha(vec3 n, float chi) {
+  if (lensAmp <= 0.0 || lpN == 0) return vec3(0.0);
+  int i = lpN - 1;
+  for (int k = 0; k < 12; k++) { if (k < lpN && chi <= lpChi[k]) { i = k; break; } }
+  if (i == 0) return lpAlpha(n, 0) * clamp(chi / lpChi[0], 0.0, 1.0) * lensAmp;
+  float c0 = lpChi[i - 1], c1 = lpChi[i];
+  return mix(lpAlpha(n, i - 1), lpAlpha(n, i), clamp((chi - c0) / (c1 - c0), 0.0, 1.0)) * lensAmp;
+}
+uniform sampler2D kgAtlas; uniform vec3 kgSc[12]; uniform float kgOn;   // (g_max, k_lo, k_hi) per plane
+vec3 kgPlane(vec3 n, int i) {                  // (gamma1, gamma2, kappa) of plane i
+  float u = 0.5 + atan(n.y, n.x) / 6.28318531;
+  float vv = clamp(0.5 - asin(clamp(n.z, -1.0, 1.0)) / 3.14159265, 0.002, 0.998);
+  vec3 c = textureLod(kgAtlas, vec2(u, (float(i) + vv) / float(lpN)), 0.0).rgb * 255.0;
+  return vec3((c.rg - 128.0) / 127.0 * kgSc[i].x, kgSc[i].y + (kgSc[i].z - kgSc[i].y) * c.b / 255.0);
+}
+vec3 kgAtChi(vec3 n, float chi) {
+  if (kgOn < 0.5 || lpN == 0) return vec3(0.0);
+  int i = lpN - 1;
+  for (int k = 0; k < 12; k++) { if (k < lpN && chi <= lpChi[k]) { i = k; break; } }
+  if (i == 0) return kgPlane(n, 0) * clamp(chi / lpChi[0], 0.0, 1.0);
+  float c0 = lpChi[i - 1], c1 = lpChi[i];
+  return mix(kgPlane(n, i - 1), kgPlane(n, i), clamp((chi - c0) / (c1 - c0), 0.0, 1.0));
+}
+const float FOURPI_C2 = 12.566370614 / (299792.458 * 299792.458);
+// Einstein radius (rad) of lens k for a source at camera distance ds; 0 if the source is not behind it
+float thetaE(int k, vec3 eye, float ds) {
+  float dl = length(sLens[k].xyz - eye);
+  return ds > dl ? FOURPI_C2 * sLens[k].w * sLens[k].w * (ds - dl) / ds : 0.0;
+}
+
+uniform int maxSteps;
+const float R_EA = 5702.6;
+const float HD[5] = float[5](1.0, 1.903, 2.477, 3.079, 3.653);
+const vec3 HC[5] = vec3[5](vec3(.30, .50, 1.0), vec3(.55, .72, 1.0), vec3(1.0, .85, .58), vec3(1.0, .45, .15), vec3(.90, .18, .10));
+vec3 hueOf(float d) {
+  float x = log(max(d, 1.0)) / log(10.0);
+  if (x <= HD[0]) return HC[0];
+  for (int i = 0; i < 4; i++) if (x < HD[i + 1]) return mix(HC[i], HC[i + 1], (x - HD[i]) / (HD[i + 1] - HD[i]));
+  return HC[4];
+}
+float roiW(vec3 p, float chi) {
+  if (roi < 0.5) return 1.0;
+  float b = degrees(asin(p.z / chi)), be = degrees(asin(dot(p, nep) / chi));
+  bool zin = chi > 1970.0 && chi < 3540.0;
+  return (roi < 1.5 ? (abs(b) > 23.0 && abs(be) > 10.0 && zin) : (b >= 23.0 && zin)) ? 1.0 : 0.0;
+}
+float slotSample(int s, vec3 uvw) {
+  uvw = clamp(uvw, 0.5 / 256.0, 1.0 - 0.5 / 256.0);
+  int t = s / 4, q = s - 4 * t;
+  vec3 a = vec3((uvw.x + float(q & 1)) * 0.5, (uvw.y + float(q >> 1)) * 0.5, uvw.z);
+  return t == 0 ? texture(atl0, a).r : (t == 1 ? texture(atl1, a).r : texture(atl2, a).r);
+}
+const int ORDER[9] = int[9](7, 8, 0, 1, 2, 3, 4, 5, 6);
+// log10(1+delta) at p from the finest level containing it, blended into the next one near its faces; cell size out
+float logRho(vec3 p, out float cell) {
+  float val = 0.0, wsum = 0.0; cell = 64.0;
+  bool first = true;
+  for (int i = 0; i < 9; i++) {
+    int s = ORDER[i]; vec4 L = lev[s];
+    if (L.w <= 0.0) continue;
+    float half_ = 128.0 * L.w; vec3 c = L.xyz + half_;
+    vec3 q = abs(p - c) / half_; float m = max(q.x, max(q.y, q.z));
+    if (m >= 1.0) continue;
+    float x = levT[s].x * (logLo + logSpan * slotSample(s, (p - L.xyz) / (256.0 * L.w))) + levT[s].y;
+    if (first) { cell = L.w; first = false;
+      float b = smoothstep(0.7, 1.0, m);
+      if (b <= 0.0) return x;
+      val = (1.0 - b) * x; wsum = 1.0 - b;
+    } else { return val + (1.0 - wsum) * x; }
+  }
+  return first ? -1.0 : val / max(wsum, 1e-3);
+}
+vec2 sphere(vec3 c, vec3 d, float R) {          // ray-sphere interval
+  float b = dot(c, d), cc = dot(c, c) - R * R, disc = b * b - cc;
+  if (disc < 0.0) return vec2(1.0, 0.0);
+  float s = sqrt(disc); return vec2(-b - s, -b + s);
+}
+void main() {
+  if (splitX >= 0.0 && gl_FragCoord.x / pxScale < splitX) { o = vec4(0.0); return; }   // split screen: DM on the right
+  vec3 d = normalize(rot * vec3((v.x - proj.y) / proj.x, (v.y - proj.w) / proj.z, 1.0));
+  vec2 iv = sphere(cam, d, min(R_EA, chiHi));
+  float t = max(iv.x, 0.3), t1 = iv.y;
+  if (chiLo > 0.0) { vec2 inn = sphere(cam, d, chiLo); if (inn.x < inn.y && inn.x < t && inn.y > t) t = inn.y; }
+  vec3 col = vec3(0.0); float sumE = 0.0, T = 1.0;
+  float jit = fract(52.9829189 * fract(0.06711056 * gl_FragCoord.x + 0.00583715 * gl_FragCoord.y));   // dither
+  bool started = false;
+  for (int i = 0; i < 400; i++) {
+    if (i >= maxSteps || t >= t1 || T < 0.02) break;
+    vec3 p = cam + t * (lensSky > 0.5 && lensAmp > 0.0 ? normalize(d - weakAlpha(d, t)) : d);   // bent ray (sky mode)
+    float cell; float lr = logRho(p, cell);
+    float dt = stepK * cell * (1.0 + t / 2000.0);          // coarser far away: the far web is dim anyway
+    if (!started) { started = true; t += jit * dt; continue; }
+    float chi = length(p);
+    if (lr > -0.99 && chi >= chiLo && chi <= chiHi) {
+      float rho = pow(10.0, lr);
+      // only overdensity glows (the projected mean density of a long ray is a uniform haze), dimmed with distance
+      float e = max(rho - thr, 0.0) * dt * roiW(p, chi) / (1.0 + t / d0) * smoothstep(3.0, 15.0, t);   // nearest cells: blur only
+      float w = smoothstep(1.0, 2.3, lr);                                   // white = dense knots
+      col += T * e * mix(hueOf(t), vec3(1.0), w * w);
+      sumE += T * e;
+      T *= exp(-kappa * max(rho - 8.0, 0.0) * dt);
+    }
+    t += dt;
+  }
+  o = vec4(col, sumE) * 1e-3;
+}`;
+
+// Composite: 2D skies (cube maps), the DM look (log, cmr.cosmic) under the toned halos, overlays, filter tint.
+const COMP_FS = `#version 300 es
+precision highp float;
+in vec2 v; out vec4 o;
+uniform sampler2D acc, dmAcc, tLUT; uniform vec2 dmUV; uniform samplerCube cMW, cCMB, cSD, cSH, cDM, cHK; uniform float skyDM, skyHK, hkGain; uniform float slabMode, slabDM;
+uniform mat3 rot; uniform vec3 cam, nep, tint; uniform vec4 proj; uniform float wMW, wCMB, cmbSphere, wHalo, wDM, dmLo, dmSpan;
+uniform float ovPlane, ovEcl, ovEws, pxDeg, splitX, sky;
+// weak lensing (sky mode): deflection (RGB = alpha world vector), shear + kappa (R, G = gamma1, gamma2; B = kappa)
+uniform int kgI0, kgI1, kgN; uniform float kgF; uniform vec3 kgS0, kgS1;   // planes and (g_max, k_lo, k_hi)
+uniform float lensK, lensW, pxRad; uniform vec4 vp;
+// ---- lensing. Weak: the deflection of a source at distance chi seen from the observer, interpolated (linearly in chi,
+// 0 at the observer) between the source planes of lens_planes.png (Born maps of the Eä shells). Strong: singular
+// isothermal spheres (the lens catalogue, largest Einstein radii in view), distances measured from the camera.
+uniform sampler2D lensAtlas; uniform float lensAmp; uniform int lpN; uniform float lpChi[12]; uniform float lpAmax[12];
+uniform vec4 sLens[32]; uniform int sN;
+vec3 lpAlpha(vec3 n, int i) {
+  float u = 0.5 + atan(n.y, n.x) / 6.28318531;
+  float vv = clamp(0.5 - asin(clamp(n.z, -1.0, 1.0)) / 3.14159265, 0.002, 0.998);
+  vec3 c = textureLod(lensAtlas, vec2(u, (float(i) + vv) / float(lpN)), 0.0).rgb;
+  return (c * 255.0 - 128.0) / 127.0 * lpAmax[i];
+}
+vec3 weakAlpha(vec3 n, float chi) {
+  if (lensAmp <= 0.0 || lpN == 0) return vec3(0.0);
+  int i = lpN - 1;
+  for (int k = 0; k < 12; k++) { if (k < lpN && chi <= lpChi[k]) { i = k; break; } }
+  if (i == 0) return lpAlpha(n, 0) * clamp(chi / lpChi[0], 0.0, 1.0) * lensAmp;
+  float c0 = lpChi[i - 1], c1 = lpChi[i];
+  return mix(lpAlpha(n, i - 1), lpAlpha(n, i), clamp((chi - c0) / (c1 - c0), 0.0, 1.0)) * lensAmp;
+}
+uniform sampler2D kgAtlas; uniform vec3 kgSc[12]; uniform float kgOn;   // (g_max, k_lo, k_hi) per plane
+vec3 kgPlane(vec3 n, int i) {                  // (gamma1, gamma2, kappa) of plane i
+  float u = 0.5 + atan(n.y, n.x) / 6.28318531;
+  float vv = clamp(0.5 - asin(clamp(n.z, -1.0, 1.0)) / 3.14159265, 0.002, 0.998);
+  vec3 c = textureLod(kgAtlas, vec2(u, (float(i) + vv) / float(lpN)), 0.0).rgb * 255.0;
+  return vec3((c.rg - 128.0) / 127.0 * kgSc[i].x, kgSc[i].y + (kgSc[i].z - kgSc[i].y) * c.b / 255.0);
+}
+vec3 kgAtChi(vec3 n, float chi) {
+  if (kgOn < 0.5 || lpN == 0) return vec3(0.0);
+  int i = lpN - 1;
+  for (int k = 0; k < 12; k++) { if (k < lpN && chi <= lpChi[k]) { i = k; break; } }
+  if (i == 0) return kgPlane(n, 0) * clamp(chi / lpChi[0], 0.0, 1.0);
+  float c0 = lpChi[i - 1], c1 = lpChi[i];
+  return mix(kgPlane(n, i - 1), kgPlane(n, i), clamp((chi - c0) / (c1 - c0), 0.0, 1.0));
+}
+const float FOURPI_C2 = 12.566370614 / (299792.458 * 299792.458);
+// Einstein radius (rad) of lens k for a source at camera distance ds; 0 if the source is not behind it
+float thetaE(int k, vec3 eye, float ds) {
+  float dl = length(sLens[k].xyz - eye);
+  return ds > dl ? FOURPI_C2 * sLens[k].w * sLens[k].w * (ds - dl) / ds : 0.0;
+}
+
+// strong lensing of the halos themselves: the halos behind the nearest lens are drawn in three layers of camera distance
+// (lyr0-2, a frustum lyrScale times wider); each screen pixel is traced back through the lenses (multi-plane) to the
+// source direction for the layer's distance, and the layer's linear light is read there (surface brightness conserved)
+uniform sampler2D lyr0, lyr1, lyr2; uniform vec3 lyrDs; uniform float lyrOn, lyrScale;
+vec3 sourceDir(vec3 d0, float ds) {
+  vec3 A = vec3(0.0), Bv = vec3(0.0);
+  for (int k = 0; k < 32; k++) {
+    if (k >= sN) break;
+    float dl = length(sLens[k].xyz - cam);
+    if (dl >= ds) break;
+    vec3 tk = normalize(d0 - A + Bv / dl);
+    vec3 ul = (sLens[k].xyz - cam) / dl;
+    vec3 e = tk - ul * dot(tk, ul); float sep = length(e);
+    float ah = FOURPI_C2 * sLens[k].w * sLens[k].w;
+    vec3 a = ah * e / sqrt(sep * sep + 0.01 * ah * ah);           // cored isothermal sphere (core 0.1 of 4 pi (sigma/c)^2)
+    A += a; Bv += dl * a;
+  }
+  return normalize(d0 - A + Bv / ds);
+}
+vec3 layerAt(sampler2D t, vec3 b) {
+  vec3 q = transpose(rot) * b;
+  if (q.z <= 0.0) return vec3(0.0);
+  vec2 uv = 0.5 + 0.5 * vec2(proj.x * q.x / q.z + proj.y, proj.z * q.y / q.z + proj.w) / lyrScale;
+  if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return vec3(0.0);
+  return texture(t, uv).rgb;
+}
+vec3 lin(vec3 c) { return pow(c, vec3(2.2)); }
+vec3 dirAt(vec2 frag) {
+  vec2 q = (frag - vp.xy) / vp.zw * 2.0 - 1.0;
+  return normalize(rot * vec3((q.x - proj.y) / proj.x, (q.y - proj.w) / proj.z, 1.0));
+}
+vec3 kRamp(float k, float kHi) {                      // convergence: dark below the mean, blue -> cyan -> white for overdense lenses
+  float t = clamp(k / kHi, -1.0, 1.0);
+  if (t < 0.0) return vec3(0.02, 0.03, 0.06) * (1.0 + t);
+  vec3 a = vec3(0.05, 0.10, 0.45), b = vec3(0.25, 0.75, 1.0), c = vec3(1.0, 1.0, 0.95);
+  return t < 0.5 ? mix(a * 2.0 * t, b, 2.0 * t) : mix(b, c, 2.0 * t - 1.0);
+}
+vec3 kgRaw(vec3 n, int i, vec3 sc) {         // (gamma1, gamma2, kappa) of plane i
+  float u = 0.5 + atan(n.y, n.x) / 6.28318531;
+  float vv = clamp(0.5 - asin(clamp(n.z, -1.0, 1.0)) / 3.14159265, 0.002, 0.998);
+  vec3 c = textureLod(kgAtlas, vec2(u, (float(i) + vv) / float(kgN)), 0.0).rgb * 255.0;
+  return vec3((c.rg - 128.0) / 127.0 * sc.x, sc.y + (sc.z - sc.y) * c.b / 255.0);
+}
+vec3 kgAt(vec3 n) { return mix(kgRaw(n, kgI0, kgS0), kgRaw(n, kgI1, kgS1), kgF); }
+void main() {
+  vec3 d = normalize(rot * vec3((v.x - proj.y) / proj.x, (v.y - proj.w) / proj.z, 1.0));
+  vec3 d0 = d;                             // the observed direction; the CMB is deflected at its own distance
+  vec3 dC = sky > 0.5 ? normalize(d - weakAlpha(d, 9400.0)) : d;
+  vec4 a = texture(acc, v * 0.5 + 0.5);
+  if (lyrOn > 0.5) {
+    a.rgb += layerAt(lyr0, sourceDir(d0, lyrDs.x)) + layerAt(lyr1, sourceDir(d0, lyrDs.y)) + layerAt(lyr2, sourceDir(d0, lyrDs.z));
+  }
+  vec3 c = a.rgb * wHalo;
+  float y = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  float s = asinh(4.0 * y) / asinh(4.0);
+  vec3 ch = y > 0.0 ? c / y : vec3(0.0);
+  ch = max(vec3(1.0) + 2.0 * (ch - vec3(1.0)), 0.0);          // the film's halo saturation (tonemap sat = 2)
+  c = y > 0.0 ? ch * s : vec3(0.0);
+  c = c / max(1.0, max(c.r, max(c.g, c.b)));
+  if (skyHK > 0.5) c = min(lin(texture(cHK, d).rgb) * wHalo * hkGain, vec3(1.0));   // the film's halo sky
+  vec4 m = texture(dmAcc, (v * 0.5 + 0.5) * dmUV);
+  bool dmSide = splitX < 0.0 || gl_FragCoord.x >= splitX;
+  if (skyDM > 0.5 && wDM > 0.0 && dmSide) {   // sky mode: the film's composite (A1c look v6), precomputed full sky
+    vec3 dm = lin(texture(cDM, d).rgb); float b = min(1.0, 2.0 * dot(dm, vec3(0.333)));
+    c = dm * wDM + c * (1.0 - 0.5 * wDM * b);
+  } else if (wDM > 0.0 && m.a > 0.0) {      // the film's DM look v5: log stretch with a shoulder, hue kept and re-saturated
+    float t = clamp((log(m.a) / log(10.0) - dmLo) / dmSpan, 0.0, 1.0);
+    float b = pow((1.0 - exp(-2.0 * t)) / (1.0 - exp(-2.0)), 1.8);
+    vec3 ch = m.rgb / max(max(m.r, max(m.g, m.b)), 1e-30);
+    float g = (ch.r + ch.g + ch.b) / 3.0;
+    ch = max(vec3(g) + 1.8 * (ch - vec3(g)), 0.0); ch /= max(max(ch.r, max(ch.g, ch.b)), 1e-30);
+    c = ch * b * wDM + c * (1.0 - 0.5 * wDM * b);
+  }
+  if (slabMode > 0.5) {               // precomputed slab: halos left of the split, DM right (or one of them)
+    bool left = splitX >= 0.0 ? gl_FragCoord.x < splitX : slabDM < 0.5;
+    c = left ? lin(vec3(min(1.0, 1.3 * texture(cSH, d).r))) : lin(texture(tLUT, vec2(texture(cSD, d).r, 0.5)).rgb);
+    if (!left) c = mix(c, vec3(dot(c, vec3(0.33))), 0.7);   // the tint carries the filter colour
+  }
+  c *= tint;
+  vec3 bg = vec3(0.0);
+  if (sky > 0.5) {
+    bg = wMW * lin(texture(cMW, d0).rgb) + wCMB * lin(texture(cCMB, dC).rgb);   // the Milky Way is in front of every lens
+  } else if (cmbSphere > 0.5) {               // the last-scattering sphere around the camera's position
+    float b = dot(cam, d), cc = dot(cam, cam) - ${"${CHI2}"}, disc = b * b - cc;
+    float t = -b + sqrt(max(disc, 0.0));                      // far side of the sphere (the inside, as seen from Eä)
+    if (disc > 0.0 && t > 0.0) bg = (cc < 0.0 ? 0.012 : 0.05) * lin(texture(cCMB, normalize(cam + t * d)).rgb);
+  }
+  c = c + bg * (1.0 - min(1.0, dot(c, vec3(0.33)) * 4.0));
+  if (sky > 0.5 && lensK > 0.0) {         // the convergence map
+    float k = kgAt(d0).z;
+    c = mix(c, lin(kRamp(k, mix(kgS0.z, kgS1.z, kgF))), lensK);
+  }
+  if (sky > 0.5 && lensW > 0.0) {         // shear whiskers on a screen grid: length |gamma|, angle from (gamma1, gamma2)
+    float S = 26.0;
+    vec2 pc = (floor(gl_FragCoord.xy / S) + 0.5) * S;
+    vec3 dc = dirAt(pc);
+    vec2 gam = kgAt(dc).xy; float gMax = mix(kgS0.x, kgS1.x, kgF);
+    float th = acos(clamp(dc.z, -1.0, 1.0)), ph = atan(dc.y, dc.x);
+    vec3 et = vec3(cos(th) * cos(ph), cos(th) * sin(ph), -sin(th)), ep = vec3(-sin(ph), cos(ph), 0.0);
+    float ang = 0.5 * atan(gam.y, gam.x);
+    vec3 w = cos(ang) * et + sin(ang) * ep;
+    vec2 sd = normalize(vec2(dot(w, rot[0]) * proj.x * vp.z, dot(w, rot[1]) * proj.z * vp.w));
+    float L = clamp(length(gam) / gMax, 0.0, 1.0) * 0.48 * S;
+    vec2 r = gl_FragCoord.xy - pc;
+    float along = dot(r, sd), across = abs(r.x * sd.y - r.y * sd.x);
+    if (abs(along) < L && across < 0.9) c = mix(c, lin(vec3(1.0, 0.85, 0.45)), 0.9 * lensW);
+  }
+  if (sky > 0.5) {
+    float gb = degrees(asin(d0.z)), be = degrees(asin(dot(d0, nep)));
+    if (ovEws > 0.5) {
+      bool edge = (abs(abs(gb) - 23.0) < 1.2 * pxDeg && abs(be) > 10.0) || (abs(abs(be) - 10.0) < 1.2 * pxDeg && abs(gb) > 23.0);
+      if (edge) c = lin(vec3(0.91, 0.77, 0.43)); }
+    if (ovPlane > 0.5) { if (abs(gb) < 1.2 * pxDeg) c = lin(vec3(0.92)); if (abs(abs(gb) - 23.0) < 0.8 * pxDeg) c = lin(vec3(0.6)); }
+    if (ovEcl > 0.5) { if (abs(be) < 1.2 * pxDeg) c = lin(vec3(0.47, 0.78, 1.0)); if (abs(abs(be) - 10.0) < 0.8 * pxDeg) c = lin(vec3(0.35, 0.55, 0.75)); }
+  }
+  if (splitX >= 0.0 && abs(gl_FragCoord.x - splitX) < 1.0) c = vec3(0.35);
+  o = vec4(pow(clamp(c, 0.0, 1.0), vec3(1.0 / 2.2)), 1.0);
+}`;
+
+// The comoving grid: a 3x3x3 lattice in Galactic axes, seen with the camera's orientation, scaled by a.
+const GRID_VS = `#version 300 es
+in vec3 p; uniform mat3 rotT; uniform float scale;
+void main() { vec3 r = rotT * (p * scale); r.z += 3.2; gl_Position = vec4(r.x / r.z * 2.4, r.y / r.z * 2.4, 0.5, 1.0); }`;
+const GRID_FS = `#version 300 es
+precision highp float; out vec4 o; void main() { o = vec4(0.62, 0.72, 0.92, 0.55); }`;
+
+// ---------------------------------------------------------------- state
+const state = { mode: "sky", yaw: 0.6, pitch: 0.1, fov: 70, pos: [0, 0, 0], speed: 50, keys: new Set(),
+  w: { mw: 1, cmb: 0, ha: 1, dm: 0 }, ov: { plane: false, ecl: false, ews: false }, filt: false, fz: 0.3, split: false, splitPos: 0.5,
+  expo: -1.4, size: 1, cmbbg: true, dmlo: 0, colour: 0, roi: 0, grid: true, vrScale: 10,
+  lens: { src: 0.43, amp: 0, k: 0, whisk: false, strong: false, srcSize: 0.1 } };   // src: position along the source planes (0..1)
+const NEP = (() => { const b = 29.811 * Math.PI / 180, l = 96.384 * Math.PI / 180; return [Math.cos(b) * Math.cos(l), Math.cos(b) * Math.sin(l), Math.sin(b)]; })();
+
+function rotation() {   // columns = camera right, up, forward in Galactic coordinates (z = NGP up)
+  const cy = Math.cos(state.yaw), sy = Math.sin(state.yaw), cp = Math.cos(state.pitch), sp = Math.sin(state.pitch);
+  const f = [cp * cy, cp * sy, sp];
+  let r = [f[1], -f[0], 0]; const rn = Math.hypot(r[0], r[1]) || 1; r = [r[0] / rn, r[1] / rn, 0];
+  const u = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]];
+  return { r, u, f, m: new Float32Array([r[0], r[1], r[2], u[0], u[1], u[2], f[0], f[1], f[2]]),
+    t: new Float32Array([r[0], u[0], f[0], r[1], u[1], f[1], r[2], u[2], f[2]]) };
+}
+
+// ---------------------------------------------------------------- resources
+const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+const face = program(QUAD_VS, FACE_FS);
+const halo = program(HALO_VS, HALO_FS);
+const dmp = program(DM_VS, DM_FS);
+const comp = program(QUAD_VS, COMP_FS.replace("${CHI2}", (CHI_LSS * CHI_LSS).toFixed(1)));
+const grid = program(GRID_VS, GRID_FS);
+
+// LUTs: z(chi) (unit 8), redshift palette (unit 9), cmr.cosmic (unit 6)
+{ const n = 1024, a = new Float32Array(n); for (let i = 0; i < n; i++) a[i] = zOfChi(6000 * i / (n - 1));
+  lut1d(8, a, gl.R32F, gl.RED, gl.FLOAT, n, gl.NEAREST); }
+function slabColour(lam) {   // blue -> white -> orange -> red (no green), as in the film
+  const st = [[0.1, 150, 110, 255], [0.45, 110, 160, 255], [0.7, 150, 210, 255], [1.1, 235, 235, 245], [1.8, 255, 200, 130],
+    [3.0, 255, 140, 70], [6.0, 235, 70, 50], [30.0, 190, 40, 90]];
+  const l = Math.log10(lam); let i = 0; while (i < st.length - 2 && Math.log10(st[i + 1][0]) < l) i++;
+  const a = Math.log10(st[i][0]), b = Math.log10(st[i + 1][0]), t = Math.min(1, Math.max(0, (l - a) / (b - a)));
+  const c = [1, 2, 3].map(k => (st[i][k] + t * (st[i + 1][k] - st[i][k])) / 255); const m = Math.max(...c);
+  return c.map(x => x / m); }
+{ const n = 256, a = new Uint8Array(4 * n);
+  for (let i = 0; i < n; i++) { const c = slabColour(0.6563 * (1 + 6 * i / (n - 1))); a.set([...c.map(x => Math.round(255 * Math.sqrt(x))), 255], 4 * i); }
+  lut1d(9, a, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, n, gl.LINEAR); }
+const COSMIC = new Uint8Array([0,0,0,1,0,0,2,1,0,4,2,0,7,3,0,10,5,0,14,6,0,18,9,0,22,11,0,27,13,0,32,16,0,37,19,0,42,22,0,47,25,0,52,29,0,58,32,0,63,36,0,69,40,0,74,44,0,80,48,0,85,52,0,91,57,0,96,61,0,101,66,0,107,70,0,112,75,0,117,80,0,123,84,0,128,89,17,133,94,29,138,99,38,143,104,46,147,109,53,152,115,64,157,120,71,161,125,79,166,130,86,170,135,94,175,141,102,179,146,109,183,151,117,187,156,125,191,161,133,195,166,142,199,172,150,202,177,158,206,182,166,209,187,175,213,193,186,216,198,195,219,203,204,223,208,212,226,213,221,227,217,229,225,216,232,222,216,235,219,215,237,217,215,240,214,214,243,212,214,245,210,213,248,207,213,250,205,213,253,203,212,255].flatMap((x, i, a) => i % 3 === 2 ? [a[i - 2], a[i - 1], x, 255] : []));
+lut1d(6, COSMIC, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, 64, gl.LINEAR);
+
+// 2D skies as cube maps (units 2, 3)
+const CUBE = { mw: { unit: 2, ready: false }, cmb: { unit: 3, ready: false }, sd: { unit: 11, ready: false }, sh: { unit: 12, ready: false },
+  dmk: { unit: 14, ready: false }, hk: { unit: 15, ready: false } };
+const FACES = [  // [target, fz, fx, fy] for the GL cube-map convention
+  [gl.TEXTURE_CUBE_MAP_POSITIVE_X, [1, 0, 0], [0, 0, -1], [0, -1, 0]], [gl.TEXTURE_CUBE_MAP_NEGATIVE_X, [-1, 0, 0], [0, 0, 1], [0, -1, 0]],
+  [gl.TEXTURE_CUBE_MAP_POSITIVE_Y, [0, 1, 0], [1, 0, 0], [0, 0, 1]], [gl.TEXTURE_CUBE_MAP_NEGATIVE_Y, [0, -1, 0], [1, 0, 0], [0, 0, -1]],
+  [gl.TEXTURE_CUBE_MAP_POSITIVE_Z, [0, 0, 1], [1, 0, 0], [0, -1, 0]], [gl.TEXTURE_CUBE_MAP_NEGATIVE_Z, [0, 0, -1], [-1, 0, 0], [0, -1, 0]]];
+function loadCube(key, url, size, done) {
+  const im = Object.assign(new Image(), { crossOrigin: "anonymous" });
+  im.onload = () => {
+    if (CUBE[key].tex) gl.deleteTexture(CUBE[key].tex);
+    const src = gl.createTexture(); gl.activeTexture(gl.TEXTURE10); gl.bindTexture(gl.TEXTURE_2D, src);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, im);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const cube = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + CUBE[key].unit); gl.bindTexture(gl.TEXTURE_CUBE_MAP, cube);
+    for (const [tgt] of FACES) gl.texImage2D(tgt, 0, gl.RGBA8, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.viewport(0, 0, size, size);
+    gl.useProgram(face.p); gl.uniform1i(face.u.src, 10);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quad); const lp = gl.getAttribLocation(face.p, "p"); gl.enableVertexAttribArray(lp); gl.vertexAttribPointer(lp, 2, gl.FLOAT, false, 0, 0);
+    for (const [tgt, fz, fx, fy] of FACES) {
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, tgt, cube, 0);
+      gl.uniform3fv(face.u.fz, fz); gl.uniform3fv(face.u.fx, fx); gl.uniform3fv(face.u.fy, fy);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteFramebuffer(fb); gl.deleteTexture(src);
+    gl.activeTexture(gl.TEXTURE0 + CUBE[key].unit); gl.bindTexture(gl.TEXTURE_CUBE_MAP, cube);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
+    CUBE[key].tex = cube; CUBE[key].ready = true; status(); if (done) done(true);
+  };
+  im.onerror = () => { CUBE[key].missing = true; status(); if (done) done(false); };
+  im.src = url;
+}
+// cube maps made offline as six faces (make_viewer_data.py skycubes): no equirect conversion, no pole distortion
+const FACE_NAMES = ["px", "nx", "py", "ny", "pz", "nz"];
+function loadCubeFaces(key, prefix, done, ext = "jpg", mip = true) {
+  const ims = FACE_NAMES.map(n => { const im = Object.assign(new Image(), { crossOrigin: "anonymous" }); im.src = `${DATA}${prefix}_${n}.${ext}`; return im; });
+  Promise.all(ims.map(im => im.decode())).then(() => {
+    const cube = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + CUBE[key].unit); gl.bindTexture(gl.TEXTURE_CUBE_MAP, cube);
+    FACES.forEach(([tgt], i) => gl.texImage2D(tgt, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, ims[i]));
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, mip ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR); gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    if (mip) gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
+    if (CUBE[key].tex) gl.deleteTexture(CUBE[key].tex);
+    CUBE[key].tex = cube; CUBE[key].ready = true; status(); if (done) done(true);
+  }).catch(() => { CUBE[key].missing = true; status(); if (done) done(false); });
+}
+// a large cube map from 2 x 2 tiles per face (sky_hires.py), decoded and uploaded one at a time: six 6144-px images
+// at once (~900 MB decoded) fail to decode in browsers
+async function loadCubeTiles(key, prefix, n, done) {
+  try {
+    const cube = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + CUBE[key].unit); gl.bindTexture(gl.TEXTURE_CUBE_MAP, cube);
+    gl.getError();
+    gl.texStorage2D(gl.TEXTURE_CUBE_MAP, Math.floor(Math.log2(n)) + 1, gl.RGBA8, n, n);
+    if (gl.getError() !== gl.NO_ERROR) {                // ~1.2 GB of graphics memory: keep the standard faces
+      gl.deleteTexture(cube); if (CUBE[key].tex) gl.bindTexture(gl.TEXTURE_CUBE_MAP, CUBE[key].tex);
+      throw new Error("not enough graphics memory for a " + n + "-px cube map");
+    }
+    const h = n / 2;
+    for (let i = 0; i < FACES.length; i++)
+      for (let r = 0; r < 2; r++)
+        for (let c = 0; c < 2; c++) {
+          const im = Object.assign(new Image(), { crossOrigin: "anonymous" }); im.src = `${DATA}${prefix}_${FACE_NAMES[i]}_${r}${c}.jpg`;
+          await im.decode();
+          gl.activeTexture(gl.TEXTURE0 + CUBE[key].unit); gl.bindTexture(gl.TEXTURE_CUBE_MAP, cube);
+          gl.texSubImage2D(FACES[i][0], 0, c * h, r * h, gl.RGBA, gl.UNSIGNED_BYTE, im);
+        }
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
+    if (CUBE[key].tex) gl.deleteTexture(CUBE[key].tex);
+    CUBE[key].tex = cube; CUBE[key].ready = true; status(); if (done) done(true);
+  } catch (e) { console.warn("hi-res sky:", e); if (done) done(false); }
+}
+// empty cube maps until loaded
+for (const k of ["mw", "cmb", "sd", "sh", "dmk", "hk"]) { const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + CUBE[k].unit); gl.bindTexture(gl.TEXTURE_CUBE_MAP, t);
+  for (const [tgt] of FACES) gl.texImage2D(tgt, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255])); }
+loadCube("mw", DATA + "sky_milkyway.jpg", 2048);
+// Sky-mode filter: the precomputed slabs (all M > 1e12 halos, DM from the full-resolution bricks; make_viewer_data.py
+// slabs), one pair per step in ln(1+z); fly mode filters the point clouds instead.
+let slabs = [], slabIdx = -1, slabLoading = false;
+fetch(DATA + "slabs.json").then(r => r.ok ? r.json() : null).then(j => { if (j) slabs = j.slabs; }).catch(() => {});
+function slabWanted() { return slabs.length ? Math.round(state.fz * (slabs.length - 1)) : -1; }
+function updateSlab() {
+  const i = slabWanted();
+  if (i < 0 || i === slabIdx || slabLoading) return;
+  slabLoading = true; const pad = String(i).padStart(3, "0"); let n = 0;
+  const fin = () => { if (++n < 2) return; slabIdx = i; slabLoading = false; if (slabWanted() !== i) updateSlab(); };
+  loadCube("sd", `${DATA}slabs/dm_${pad}.jpg`, 1024, fin); loadCube("sh", `${DATA}slabs/halos_${pad}.jpg`, 1024, fin);
+}
+loadCube("cmb", DATA + "sky_cmb.jpg", 1024);
+// Sky-mode dark matter: sky_dm_near.jpg / sky_dm_full.jpg (make_viewer_data.py skydm), loaded on demand
+function skyDM() {   // the film's dark-matter composite (A1c, to 1.5 Gpc/h), loaded on demand
+  if (state.mode !== "sky" || state.w.dm <= 0 || CUBE.dmk.want) return;
+  CUBE.dmk.want = true; status(); loadCubeFaces("dmk", "sky_dm");
+}
+loadCubeFaces("hk", "sky_halos");   // the film's halos, opening look
+// hi-res faces (sky_hires.py), when deployed with the page and the GPU takes 6144-px cube maps
+fetch(DATA + "hires/sky_halos_px_00.jpg", { method: "HEAD" }).then(r => {
+  if (!r.ok || gl.getParameter(gl.MAX_CUBE_MAP_TEXTURE_SIZE) < 6144) return;
+  document.getElementById("hires-row").hidden = false;
+  document.querySelectorAll("[data-hires]").forEach(b => b.addEventListener("click", () => {
+    const lab = b.textContent.replace(/ …$|: failed$/, "");
+    b.textContent = lab + " …";
+    const fin = ok => { b.textContent = ok ? lab : lab + ": failed"; };
+    if (b.dataset.hires) loadCubeTiles("hk", b.dataset.hires, 6144, fin); else loadCubeFaces("hk", "sky_halos", fin);
+  }));
+}).catch(() => {});
+// weak lensing (make lensing/explorer_layer.py): per source a deflection and a shear+kappa cube, loaded on demand
+let LENS = null;
+fetch(DATA + "lensing.json").then(r => r.ok ? r.json() : null).then(j => { LENS = j; }).catch(() => {});
+// convergence and shear for a chosen source distance: the plane atlas (unit 19)
+const KG = { ready: false, started: false, n: 0 };
+function kgLoad() {
+  if (KG.started || !LENS || !LENS.kg_planes) { if (!LENS) setTimeout(kgLoad, 300); return; }
+  KG.started = true; status();
+  const im = Object.assign(new Image(), { crossOrigin: "anonymous" });
+  im.onload = () => {
+    const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE19); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, im);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    KG.n = LENS.kg_planes.length; KG.sc = new Float32Array(36);
+    LENS.kg_planes.forEach((q, i) => KG.sc.set([q.g_max, q.k_lo, q.k_hi], 3 * i)); KG.ready = true; status();
+  };
+  im.src = DATA + "lens_kg_planes.png";
+}
+// weak lensing at each object's own distance: the source-plane atlas (unit 18)
+const LP = { ready: false, started: false, chi: new Float32Array(12), amax: new Float32Array(12), n: 0 };
+function lensPlanesLoad() {
+  if (LP.started || !LENS || !LENS.planes) { if (!LENS) setTimeout(lensPlanesLoad, 300); return; }
+  LP.started = true; status();
+  const im = Object.assign(new Image(), { crossOrigin: "anonymous" });
+  im.onload = () => {
+    const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE18); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, im);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    LENS.planes.forEach((pl, i) => { LP.chi[i] = pl.chi; LP.amax[i] = pl.a_max_rad; }); LP.n = LENS.planes.length; LP.ready = true; status();
+  };
+  im.src = DATA + "lens_planes.png";
+}
+// strong lenses: the catalogue of host halos (x, y, z, sigma), the 32 with the largest Einstein radii in view picked every
+// few frames; their deflections add up (thin lenses, each with its own distance)
+const LC = { data: null, n: 0, started: false, sel: new Float32Array(128), nSel: 0, frame: 0 };
+function lensCatLoad() {
+  if (LC.started) return; LC.started = true; status();
+  fetch(DATA + "lenses.wasm").then(r => r.arrayBuffer()).then(b => { LC.data = new Float32Array(b); LC.n = LC.data.length / 4; status(); }).catch(() => {});
+}
+function pickLenses(R, eye, pxRadNow, fovDiag) {
+  LC.nSel = 0;
+  if (!state.lens.strong || state.mode !== "sky" || !LC.data) return;
+  if ((LC.frame++ % 4) !== 0 && LC.lastEye && Math.hypot(...eye.map((x, i) => x - LC.lastEye[i])) < 1) return void (LC.nSel = LC.keep);
+  const cosMax = Math.cos(Math.min(Math.PI / 2, fovDiag / 2 + 0.002)), K = 12.566370614 / (299792.458 * 299792.458), best = [];
+  for (let i = 0; i < LC.n; i++) {
+    const x = LC.data[4 * i] - eye[0], y = LC.data[4 * i + 1] - eye[1], z = LC.data[4 * i + 2] - eye[2], dl = Math.hypot(x, y, z);
+    if (dl < 2) continue;
+    const c = (x * R.f[0] + y * R.f[1] + z * R.f[2]) / dl;
+    if (c < cosMax) continue;
+    const s = LC.data[4 * i + 3], te = K * s * s * Math.max(0, 1 - dl / 4800) / pxRadNow;   // Einstein radius (px), sources at 4800
+    if (te < 1.5) continue;
+    if (best.length < 32) best.push([te, i]); else if (te > best[31][0]) best[31] = [te, i]; else continue;
+    best.sort((a, b) => b[0] - a[0]);
+  }
+  const dist = i => Math.hypot(LC.data[4 * i] - eye[0], LC.data[4 * i + 1] - eye[1], LC.data[4 * i + 2] - eye[2]);
+  best.sort((a, b) => dist(a[1]) - dist(b[1]));                      // nearest first: the shader traces planes in order
+  best.forEach(([, i], k) => LC.sel.set([LC.data[4 * i], LC.data[4 * i + 1], LC.data[4 * i + 2], LC.data[4 * i + 3]], 4 * k));
+  LC.nSel = LC.keep = best.length; LC.lastEye = eye.slice();
+}
+function lensUniforms(u, eye) {             // the shared lensing uniforms (weak planes, strong lenses) of any program
+  const weak = state.lens.weak && LP.ready && state.mode === "sky";
+  if (u.kgOn) { gl.uniform1f(u.kgOn, weak && KG.ready ? 1 : 0); gl.uniform1i(u.kgAtlas, 19);
+    if (KG.ready) gl.uniform3fv(u["kgSc[0]"], KG.sc); }
+  if (u.srcSize) gl.uniform1f(u.srcSize, state.lens.srcSize);
+  gl.uniform1i(u.lensAtlas, 18); gl.uniform1f(u.lensAmp, weak ? (state.lens.ampX || 1) : 0); gl.uniform1i(u.lpN, weak ? LP.n : 0);
+  gl.uniform1fv(u["lpChi[0]"], LP.chi); gl.uniform1fv(u["lpAmax[0]"], LP.amax);
+  gl.uniform4fv(u["sLens[0]"], LC.sel); gl.uniform1i(u.sN, LC.nSel);
+  if (u.lensSky) gl.uniform1f(u.lensSky, state.mode === "sky" ? 1 : 0);
+}
+// the precomputed halo sky applies when nothing selects halos (region, filter, split, redshift colours)
+// (not in stereo: a panorama sits at infinity, so live points give the parallax)
+const skyHalosOn = () => state.mode === "sky" && CUBE.hk.ready && state.roi === 0 && !state.filt && !state.split && state.colour === 0 && !SBS && !XR.session && !state.lens.weak && !state.lens.strong;
+const skyDMOn = () => state.mode === "sky" && CUBE.dmk.ready && !CUBE.dmk.missing && !SBS && !XR.session && !state.lens.weak;
+
+// ---- point clouds (halos: 20 B records; DM: 16 B records), streamed in chunks, brightest first
+function pointCloud(json, prog, layout) {
+  const pc = { total: 0, loaded: 0, started: false, vao: gl.createVertexArray(), buf: gl.createBuffer(), missing: false };
+  pc.start = () => {
+    if (pc.started) return; pc.started = true;
+    fetch(DATA + json).then(r => { if (!r.ok) throw new Error(); return r.json(); }).then(async (j) => {
+      pc.total = j.n; pc.meta = j; gl.bindBuffer(gl.ARRAY_BUFFER, pc.buf); gl.bufferData(gl.ARRAY_BUFFER, j.n * j.stride, gl.STATIC_DRAW);
+      gl.bindVertexArray(pc.vao); layout(j.stride); gl.bindVertexArray(null);
+      let off = 0;
+      for (const f of j.files) {
+        const buf = await fetch(DATA + f.file).then(r => r.arrayBuffer());
+        gl.bindBuffer(gl.ARRAY_BUFFER, pc.buf); gl.bufferSubData(gl.ARRAY_BUFFER, off, new Uint8Array(buf));
+        off += buf.byteLength; pc.loaded += f.n; status();
+      }
+    }).catch(() => { pc.missing = true; status(); });
+  };
+  return pc;
+}
+const halos = pointCloud("halos.json", halo, (s) => {
+  const lp = gl.getAttribLocation(halo.p, "pos"), lr = gl.getAttribLocation(halo.p, "rl"), lc = gl.getAttribLocation(halo.p, "col");
+  gl.enableVertexAttribArray(lp); gl.vertexAttribPointer(lp, 3, gl.FLOAT, false, s, 0);
+  gl.enableVertexAttribArray(lr); gl.vertexAttribPointer(lr, 2, gl.HALF_FLOAT, false, s, 12);
+  gl.enableVertexAttribArray(lc); gl.vertexAttribPointer(lc, 4, gl.UNSIGNED_BYTE, true, s, 16); });
+// ---- the dark-matter volume (fly mode, and the sky-mode filter)
+const VOL = { ready: false, missing: false, started: false, loaded: 0, total: 0, meta: null, lev: new Float32Array(36), levT: new Float32Array(18), atl: [] };
+const volp = program(QUAD_VS, VOL_FS);
+const VOL_UNITS = [0, 1, 4];
+async function gunzip(buf) {
+  const ds = new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return new Uint8Array(await new Response(ds).arrayBuffer());
+}
+function startVolume() {
+  if (VOL.started) return; VOL.started = true; status();
+  fetch(DATA + "vol.json").then(r => { if (!r.ok) throw new Error(); return r.json(); }).then(async (j) => {
+    VOL.meta = j; const all = [...j.levels.slice().reverse(), ...j.targets]; VOL.total = all.length;
+    for (let a = 0; a < 3; a++) { const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + VOL_UNITS[a]); gl.bindTexture(gl.TEXTURE_3D, t);
+      gl.texStorage3D(gl.TEXTURE_3D, 1, gl.R8, 512, 512, 256);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      for (const w of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, w, gl.CLAMP_TO_EDGE);
+      VOL.atl.push(t); }
+    const slotOf = e => j.levels.includes(e) ? j.levels.indexOf(e) : 7 + j.targets.indexOf(e);   // levels sorted fine -> coarse
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    for (const e of all) {          // coarse levels first: the whole light-cone shows early, detail arrives after
+      const data = await gunzip(await fetch(DATA + e.file).then(r => r.arrayBuffer()));
+      const s = slotOf(e), a = s >> 2, q = s & 3;
+      gl.activeTexture(gl.TEXTURE0 + VOL_UNITS[a]); gl.bindTexture(gl.TEXTURE_3D, VOL.atl[a]);
+      gl.texSubImage3D(gl.TEXTURE_3D, 0, (q & 1) * 256, (q >> 1) * 256, 0, 256, 256, 256, gl.RED, gl.UNSIGNED_BYTE, data);
+      VOL.lev.set([e.lo[0], e.lo[1], e.lo[2], e.cell], 4 * s); VOL.levT.set([e.scale ?? 1, e.offset ?? 0], 2 * s);
+      VOL.loaded++; VOL.ready = true; status();
+    }
+  }).catch(() => { VOL.missing = true; status(); });
+}
+const dark = pointCloud("dm.json", dmp, (s) => {
+  const lp = gl.getAttribLocation(dmp.p, "pos"), lr = gl.getAttribLocation(dmp.p, "rw");
+  gl.enableVertexAttribArray(lp); gl.vertexAttribPointer(lp, 3, gl.FLOAT, false, s, 0);
+  gl.enableVertexAttribArray(lr); gl.vertexAttribPointer(lr, 2, gl.HALF_FLOAT, false, s, 12); });
+halos.start();
+
+function status() { const parts = [];
+  if (!CUBE.mw.ready && !CUBE.mw.missing && state.w.mw > 0) parts.push("Milky Way");
+  if (!CUBE.cmb.ready && !CUBE.cmb.missing) parts.push("CMB");
+  if (halos.loaded < halos.total) parts.push(`halos ${Math.round(100 * halos.loaded / halos.total)}%`);
+  if (VOL.started && !VOL.missing && VOL.loaded < VOL.total) parts.push(`dark matter ${VOL.loaded}/${Math.max(VOL.total, 1)}`);
+  if (VOL.missing && state.w.dm > 0) parts.push("dark-matter volume not available");
+  if (state.mode === "sky" && state.w.dm > 0 && CUBE.dmk.want && !CUBE.dmk.ready && !CUBE.dmk.missing) parts.push("dark-matter sky");
+  if ((LP.started && !LP.ready) || (KG.started && !KG.ready)) parts.push("lensing maps");
+  loadEl.textContent = parts.length ? "loading: " + parts.join(", ") : ""; }
+
+// ---- grid lattice
+const gridBuf = gl.createBuffer(); let gridN = 0;
+{ const g = [-1, 0, 1], v = [];
+  for (const i of g) for (const j of g) { v.push(-1, i, j, 1, i, j, i, -1, j, i, 1, j, i, j, -1, i, j, 1); }
+  gridN = v.length / 3; gl.bindBuffer(gl.ARRAY_BUFFER, gridBuf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.STATIC_DRAW); }
+
+// ---- accumulation target and DM auto-levels
+// strong lensing: three float layers of halos behind the lenses (units 20-22), a frustum LYR.scale times wider
+const LYR = { w: 0, h: 0, fb: [], tex: [], ds: new Float32Array(3), on: false, scale: 1.5 };
+function ensureLayers(w, h) {
+  if (LYR.w === w && LYR.h === h) return;
+  LYR.tex.forEach(t => gl.deleteTexture(t)); LYR.fb.forEach(f => gl.deleteFramebuffer(f)); LYR.tex = []; LYR.fb = [];
+  for (let i = 0; i < 3; i++) {
+    const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE20 + i); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, hasFloatFB ? gl.RGBA16F : gl.RGBA8, w, h, 0, gl.RGBA, hasFloatFB ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+    LYR.tex.push(t); LYR.fb.push(f);
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); LYR.w = w; LYR.h = h;
+}
+let dmFbo = null, dmTex = null, dmFrac = 1.0, frameMs = 16, dmW = 1, dmH = 1;   // dmFrac: used part of the half-resolution DM target
+let fbo = null, fboTex = null, fboW = 0, fboH = 0, small = null, autoLo = -6, autoSpan = 3.5, frameNo = 0, autoFirst = true;
+const SW = 96, SH = 54;
+function ensureFBO(w, h) {
+  if (fbo && fboW === w && fboH === h) return;
+  fboW = w; fboH = h; fboTex = gl.createTexture(); gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, fboTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, hasFloatFB ? gl.RGBA16F : gl.RGBA8, w, h, 0, gl.RGBA, hasFloatFB ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  fbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fboTex, 0); gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  dmTex = gl.createTexture(); gl.activeTexture(gl.TEXTURE13); gl.bindTexture(gl.TEXTURE_2D, dmTex);   // half resolution
+  gl.texImage2D(gl.TEXTURE_2D, 0, hasFloatFB ? gl.RGBA16F : gl.RGBA8, Math.ceil(w / 2), Math.ceil(h / 2), 0, gl.RGBA, hasFloatFB ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  dmFbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, dmFbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, dmTex, 0); gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+function autoLevels() {   // every 15 frames: blit the accumulation to 96x54, read back, log range of the DM channel
+  if (!hasFloatFB || !fbo) return;
+  if (!small) { const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, SW, SH, 0, gl.RGBA, gl.FLOAT, null);
+    small = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, small); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0); }
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, dmFbo); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, small);
+  gl.blitFramebuffer(0, 0, dmW, dmH, 0, 0, SW, SH, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, small);
+  const px = new Float32Array(SW * SH * 4); gl.readPixels(0, 0, SW, SH, gl.RGBA, gl.FLOAT, px);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+  const l = []; for (let i = 3; i < px.length; i += 4) if (px[i] > 0 && isFinite(px[i])) l.push(Math.log10(px[i]));
+  if (l.length < 50) return;
+  l.sort((a, b) => a - b);
+  const lo = l[Math.floor(0.50 * l.length)], hi = l[Math.floor(0.9995 * (l.length - 1))];   // voids dark, knots not clipped
+  const k = autoFirst ? 1.0 : 0.3; autoFirst = false;               // first reading: jump, then follow smoothly
+  autoLo += k * (lo - autoLo); autoSpan += k * (Math.max(hi - lo, 1.0) - autoSpan);
+}
+
+// ---- the H-alpha filter: a constant R window, slider uniform in ln(1+z) from z = 0.01 to 6
+function filterWindow() {
+  const z = Math.expm1(Math.log1p(0.01) + state.fz * (Math.log1p(6) - Math.log1p(0.01)));
+  const E = Math.sqrt(OM * (1 + z) ** 3 + OL), w = C * (1 + z) / (100 * E), chi = chiOfZ(z);
+  return { z, chi, lo: Math.max(chi - w / 2, 0.5), hi: chi + w / 2, lam: 0.6563 * (1 + z) };
+}
+
+// ---------------------------------------------------------------- input
+const $ = id => document.getElementById(id);
+function bindRange(id, outId, set, fmt) { const el = $(id); const upd = () => { set(parseFloat(el.value)); if (outId) $(outId).textContent = fmt(parseFloat(el.value)); };
+  el.addEventListener("input", upd); upd(); }
+bindRange("w-ha", "o-ha", x => state.w.ha = x, x => x.toFixed(2));
+bindRange("w-dm", "o-dm", x => { state.w.dm = x; if (x > 0) { startVolume(); skyDM(); } status(); }, x => x.toFixed(2));
+bindRange("w-mw", "o-mw", x => { state.w.mw = x; status(); }, x => x.toFixed(2));
+bindRange("w-cmb", "o-cmb", x => state.w.cmb = x, x => x.toFixed(2));
+bindRange("l-amp", "o-lamp", x => state.lens.ampX = Math.pow(10, x), x => "×" + Math.pow(10, x).toPrecision(2));
+$("l-on").addEventListener("change", e => { state.lens.weak = e.target.checked; if (e.target.checked) { lensPlanesLoad(); kgLoad(); if (state.w.dm > 0) startVolume(); } });
+$("l-st").addEventListener("change", e => { state.lens.strong = e.target.checked; if (e.target.checked) lensCatLoad(); });
+bindRange("fov", "o-fov", x => state.fov = Math.pow(10, x), x => { const f = Math.pow(10, x);   // (fieldTxt is defined later)
+  return f >= 1 ? `${f.toFixed(0)}°` : f >= 1 / 60 ? `${(f * 60).toFixed(1)}′` : `${(f * 3600).toFixed(0)}″`; });
+const syncFov = () => { const el = $("fov"); const v = Math.log10(state.fov); if (Math.abs(parseFloat(el.value) - v) > 0.004) { el.value = v; $("o-fov").textContent = fieldTxt(); } };
+function goRing(name) {
+  const m = name === "massive" ? [-336.6206, 792.4707, -706.8691] : RINGS[name];
+  if (state.mode !== "sky") setMode("sky");
+  if (!$("l-st").checked) { $("l-st").checked = true; $("l-st").dispatchEvent(new Event("change")); }
+  $("w-mw").value = 0; $("w-mw").dispatchEvent(new Event("input"));
+  if (state.expo < 0.5) { $("exp").value = 1; $("exp").dispatchEvent(new Event("input")); }
+  state.yaw = Math.atan2(m[1], m[0]); state.pitch = Math.atan2(m[2], Math.hypot(m[0], m[1]));
+  state.fov = name === "massive" ? 2.4 / 60 : 1.4 / 60;
+}
+document.querySelectorAll("[data-ring]").forEach(b => b.addEventListener("click", () => goRing(b.dataset.ring)));
+bindRange("l-ss", "o-lss", x => state.lens.srcSize = Math.pow(10, x), x => "×" + Math.pow(10, x).toPrecision(2) + " of true size");
+bindRange("l-k", "o-lk", x => { state.lens.k = x; if (x > 0) kgLoad(); }, x => x.toFixed(2));
+$("l-wh").addEventListener("change", e => { state.lens.whisk = e.target.checked; if (e.target.checked) kgLoad(); });
+bindRange("l-src", "o-lsrc", x => state.lens.src = x, x => {
+  if (!LENS || !LENS.kg_planes) return "";
+  const P = LENS.kg_planes, t = x * (P.length - 1), i = Math.min(P.length - 2, Math.floor(t)), f = t - i;
+  if (i === P.length - 2 && f > 0.5) return "the CMB";
+  const chi = P[i].chi + f * (P[i + 1].chi - P[i].chi); return `z = ${zOfChi(Math.min(chi, R_EA)).toFixed(2)}`; });
+setTimeout(() => $("l-src").dispatchEvent(new Event("input")), 1500);   // the label needs lensing.json
+bindRange("vr-scale", "o-vrs", x => state.vrScale = Math.pow(10, x), x => `${Math.pow(10, x).toPrecision(2)} (eyes ${(0.064 * Math.pow(10, x)).toPrecision(2)} Mpc/h apart)`);
+$("vr-btn").addEventListener("click", () => { if (XR.session) XR.session.end(); else enterVR().catch(e => { loadEl.textContent = "VR: " + e.message; }); });
+bindRange("exp", "o-exp", x => state.expo = x, x => (x >= 0 ? "+" : "") + x.toFixed(1));
+bindRange("size", "o-size", x => state.size = x, x => "×" + x.toFixed(2));
+bindRange("dm-lo", "o-dmlo", x => state.dmlo = x, x => (x >= 0 ? "+" : "") + x.toFixed(1));
+bindRange("f-z", "o-z", x => state.fz = x, () => "z = " + (slabs.length ? slabs[slabWanted()].z : filterWindow().z).toFixed(2));
+bindRange("f-split", "o-split", x => state.splitPos = x, x => x.toFixed(2));
+for (const [id, k] of [["ov-plane", "plane"], ["ov-ecl", "ecl"], ["ov-ews", "ews"]]) $(id).addEventListener("change", e => state.ov[k] = e.target.checked);
+$("f-on").addEventListener("change", e => state.filt = e.target.checked);
+$("split-on").addEventListener("change", e => { state.split = e.target.checked; if (state.split) { startVolume(); if (state.w.dm === 0) { $("w-dm").value = 1; $("w-dm").dispatchEvent(new Event("input")); } } });
+$("grid-on").addEventListener("change", e => state.grid = e.target.checked);
+$("cmbbg").addEventListener("change", e => state.cmbbg = e.target.checked);
+function seg(ids, set) { ids.forEach((id, i) => $(id).addEventListener("click", () => { ids.forEach((j, k) => $(j).setAttribute("aria-pressed", k === i)); set(i); })); }
+seg(["c-phys", "c-z"], i => state.colour = i);
+seg(["r-all", "r-ews", "r-sil"], i => state.roi = i);
+$("collapse").addEventListener("click", () => { const p = $("panel"); const c = p.dataset.collapsed === "1"; p.dataset.collapsed = c ? "0" : "1";
+  $("collapse").textContent = c ? "Hide" : "Show"; $("collapse").setAttribute("aria-expanded", c ? "true" : "false"); });
+function setMode(m) {
+  if (m === "fly" && state.expo === -1.4) { state.expo = 0; $("exp").value = 0; $("exp").dispatchEvent(new Event("input")); }   // the opening's faint halos are a sky-mode start only
+  state.mode = m; $("m-sky").setAttribute("aria-pressed", m === "sky"); $("m-fly").setAttribute("aria-pressed", m === "fly");
+  document.querySelectorAll(".only-sky").forEach(e => e.hidden = m !== "sky"); document.querySelectorAll(".only-fly").forEach(e => e.hidden = m !== "fly");
+  $("fly-ctl").hidden = m !== "fly"; if (m === "sky") state.pos = [0, 0, 0];
+  if (state.w.dm > 0) { startVolume(); skyDM(); } status(); }
+$("m-sky").onclick = () => setMode("sky"); $("m-fly").onclick = () => setMode("fly");
+const GOTO = { observer: [0, 0, 0], hero: [187.7 - 60, 19.1, -80.5 + 20], massive: [-336.6206 + 30, 792.4707 - 30, -706.8691 + 15],
+  void: [-381.5, 190.8, -400.7], outside: [-0.55 * 15500, -0.95 * 15500, 0.42 * 15500] };
+const LOOKAT = { hero: [187.7, 19.1, -80.5], massive: [-336.6206, 792.4707, -706.8691], outside: [0, 0, 0] };
+// labelled marks in 3D (fly mode): the observer and the bookmarked places
+const MARKS = [["Observer", [0, 0, 0]], ["Hero cluster", LOOKAT.hero], ["Most massive halo, 2.7e15 M☉/h", LOOKAT.massive],
+  ["Deepest void", [-381.5, 190.8, -400.7]]].map(([name, p]) => { const el = document.createElement("div"); el.className = "mark";
+  el.innerHTML = `<i></i><span>${name}</span>`; el.hidden = true; document.getElementById("marks").appendChild(el); return { p, el }; });
+function placeMarks(R, focal) {
+  const W = canvas.clientWidth, Hh = canvas.clientHeight, f = focal * Hh / canvas.height;   // focal is in canvas pixels
+  for (const m of MARKS) {
+    const d = [0, 1, 2].map(i => m.p[i] - state.pos[i]);
+    const x = R.r[0] * d[0] + R.r[1] * d[1] + R.r[2] * d[2], y = R.u[0] * d[0] + R.u[1] * d[1] + R.u[2] * d[2];
+    const z = R.f[0] * d[0] + R.f[1] * d[1] + R.f[2] * d[2], dist = Math.hypot(...d);
+    const u = W / 2 + f * x / z, vv = Hh / 2 - f * y / z;
+    const show = state.mode === "fly" && z > 1 && dist > 2 && u > 0 && u < W && vv > 0 && vv < Hh;
+    m.el.hidden = !show;
+    if (show) { m.el.style.left = `${u}px`; m.el.style.top = `${vv}px`;
+      m.el.style.opacity = String(Math.max(0.35, Math.min(1, 300 / dist))); }
+  }
+}
+document.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => {
+  const k = b.dataset.go; state.pos = GOTO[k].slice();
+  if (LOOKAT[k]) { const d = LOOKAT[k].map((x, i) => x - state.pos[i]); state.yaw = Math.atan2(d[1], d[0]); state.pitch = Math.atan2(d[2], Math.hypot(d[0], d[1])); }
+  state.speed = k === "outside" ? 2000 : 30; }));
+
+// one finger / the mouse: look around. Two fingers: spread / pinch = zoom (field of view); in fly mode a parallel drag
+// flies: up / down = forward / backward, left / right = sideways (a full-screen swipe = 2 s at the current speed)
+const touches = new Map();
+let drag = null, two = null;
+function twoState() { const [a, b] = [...touches.values()];
+  return { d: Math.hypot(a[0] - b[0], a[1] - b[1]), c: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] }; }
+canvas.addEventListener("pointerdown", e => { try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* synthetic events */ } touches.set(e.pointerId, [e.clientX, e.clientY]);
+  if (touches.size === 2) { two = twoState(); drag = null; } else if (touches.size === 1) { drag = [e.clientX, e.clientY]; canvas.classList.add("drag"); } });
+canvas.addEventListener("pointermove", e => {
+  if (!touches.has(e.pointerId)) return;
+  touches.set(e.pointerId, [e.clientX, e.clientY]);
+  if (touches.size === 2 && two) {
+    const t = twoState();
+    if (t.d > 0 && two.d > 0) state.fov = Math.max(0.006, Math.min(120, state.fov * two.d / t.d));     // spread = zoom in
+    const dx = t.c[0] - two.c[0], dy = t.c[1] - two.c[1], H = canvas.clientHeight;
+    if (state.mode === "fly") {
+      const R = rotation(), f = -2 * state.speed * dy / H, sd = -2 * state.speed * dx / H;   // fingers up = forward
+      for (let i = 0; i < 3; i++) state.pos[i] += f * R.f[i] + sd * R.r[i];
+    } else { const k = state.fov / H * Math.PI / 180; state.yaw += dx * k; state.pitch = Math.max(-1.55, Math.min(1.55, state.pitch + dy * k)); }
+    two = t; return;
+  }
+  if (!drag) return; const k = state.fov / canvas.clientHeight * Math.PI / 180;
+  state.yaw += (e.clientX - drag[0]) * k; state.pitch = Math.max(-1.55, Math.min(1.55, state.pitch + (e.clientY - drag[1]) * k)); drag = [e.clientX, e.clientY]; });
+const endDrag = e => { touches.delete(e.pointerId); two = touches.size === 2 ? twoState() : null;
+  if (touches.size === 1) { drag = [...touches.values()][0]; } else { drag = null; canvas.classList.remove("drag"); } };
+canvas.addEventListener("pointerup", endDrag); canvas.addEventListener("pointercancel", endDrag);
+canvas.addEventListener("wheel", e => { e.preventDefault();
+  if (state.mode === "sky") state.fov = Math.max(0.006, Math.min(120, state.fov * Math.exp(e.deltaY * 0.001)));
+  else state.speed = Math.max(0.5, Math.min(20000, state.speed * Math.exp(-e.deltaY * 0.0015))); }, { passive: false });
+// keys by physical code (layout-independent): KeyW, Space, ShiftLeft, ...
+addEventListener("keydown", e => { if (e.target.tagName === "INPUT" && e.target.type === "range") e.target.blur();
+  if (state.mode === "fly" && (e.code === "Space" || e.code.startsWith("Arrow"))) e.preventDefault(); state.keys.add(e.code); });
+addEventListener("keyup", e => state.keys.delete(e.code));
+addEventListener("blur", () => state.keys.clear());
+
+// ---------------------------------------------------------------- frame
+function bindQuad(prog) { gl.bindBuffer(gl.ARRAY_BUFFER, quad); const lp = gl.getAttribLocation(prog.p, "p"); gl.enableVertexAttribArray(lp); gl.vertexAttribPointer(lp, 2, gl.FLOAT, false, 0, 0); }
+function pointUniforms(u, R, W, H, f, focal, eye) {
+  gl.uniformMatrix3fv(u.rotT, false, R.t); gl.uniform3fv(u.cam, eye || state.pos); gl.uniform3fv(u.nep, NEP);
+  gl.uniform1f(u.focal, focal); gl.uniform1f(u.Wpx, W); gl.uniform1f(u.H, H); gl.uniform1f(u.maxPt, MAXPT);
+  gl.uniform1f(u.chiLo, f ? f.lo : -1); gl.uniform1f(u.chiHi, f ? f.hi : 1e9); gl.uniform1f(u.roi, state.roi);
+  gl.uniform1i(u.zlut, 8);
+}
+let last = performance.now();
+// ---- one view of the scene: orientation R (rotation() layout), eye position, projection (A, B, C, D), viewport in the
+// target framebuffer. The desktop draws one; the side-by-side preview (#sbs) and WebXR draw one per eye.
+function symProj(fovDeg, aspect) { const t = Math.tan(fovDeg * Math.PI / 360); return [1 / (t * aspect), 0, 1 / t, 0]; }
+function renderView(V, f, slabMode) {
+  const [vx, vy, W, H] = V.vp, P = V.proj, focal = P[0] * W / 2;
+  const pxRadNow = 2 * Math.atan(1 / P[2]) / H, fovDiag = 2 * Math.atan(Math.hypot(1 / P[0], 1 / P[2]));
+  if (V.adapt) pickLenses(V.R, V.pos, pxRadNow, fovDiag);
+  const splitLocal = state.split ? state.splitPos * W : -1;
+  ensureFBO(W, H);
+  const volOn = VOL.ready && state.w.dm > 0 && !slabMode && !(skyDMOn() && !f);
+  if (volOn && V.adapt) { if (frameMs > 34 && dmFrac > 0.5) dmFrac *= 0.9; else if (frameMs < 20 && dmFrac < 1.0) dmFrac = Math.min(1.0, dmFrac * 1.05); }
+  const dw = Math.max(1, Math.round(Math.ceil(W / 2) * dmFrac)), dh = Math.max(1, Math.round(Math.ceil(H / 2) * dmFrac));
+  dmW = dw; dmH = dh;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, dmFbo); gl.viewport(0, 0, Math.ceil(W / 2), Math.ceil(H / 2)); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.viewport(0, 0, dw, dh);
+  if (volOn) {
+    gl.useProgram(volp.p); const vu = volp.u;
+    VOL_UNITS.forEach((un, a) => { gl.activeTexture(gl.TEXTURE0 + un); gl.bindTexture(gl.TEXTURE_3D, VOL.atl[a]); });
+    gl.uniform1i(vu.atl0, VOL_UNITS[0]); gl.uniform1i(vu.atl1, VOL_UNITS[1]); gl.uniform1i(vu.atl2, VOL_UNITS[2]);
+    gl.uniform4fv(vu["lev[0]"], VOL.lev); gl.uniform2fv(vu["levT[0]"], VOL.levT); gl.uniformMatrix3fv(vu.rot, false, V.R.m); gl.uniform3fv(vu.cam, V.pos); gl.uniform3fv(vu.nep, NEP);
+    gl.uniform4fv(vu.proj, P); gl.uniform1f(vu.roi, state.roi);
+    gl.uniform1f(vu.chiLo, f ? f.lo : 0); gl.uniform1f(vu.chiHi, f ? f.hi : 1e9);
+    gl.uniform1f(vu.logLo, VOL.meta.log_lo); gl.uniform1f(vu.logSpan, VOL.meta.log_hi - VOL.meta.log_lo);
+    gl.uniform1f(vu.d0, state.mode === "fly" ? 150.0 : 400.0); gl.uniform1f(vu.kappa, 0.004); gl.uniform1f(vu.splitX, splitLocal);
+    gl.uniform1f(vu.thr, f ? 1.0 : 1.5); gl.uniform1f(vu.stepK, V.xr ? 1.8 : 1.4); gl.uniform1i(vu.maxSteps, V.xr ? 180 : 260);
+    gl.uniform1f(vu.pxScale, dw / W); lensUniforms(vu, V.pos);
+    bindQuad(volp); gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.viewport(0, 0, W, H); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+  if (halos.loaded > 0 && state.w.ha > 0 && !slabMode && !skyHalosOn()) {
+    gl.useProgram(halo.p); pointUniforms(halo.u, V.R, W, H, f, focal, V.pos); gl.uniform4fv(halo.u.proj, P); gl.uniform1f(halo.u.splitX, splitLocal);
+    // auto-exposure far from the observer: every halo is then far away (neutral near the observer)
+    const chiCam = Math.hypot(...V.pos), dg = Math.max(chiCam - 0.8 * R_EA, 0) + 100.0;
+    let expo = Math.pow(10, state.expo) * 1e4 * Math.max(1.0, 0.02 * (dg * dg) / 1e4);
+    if (f) expo *= Math.max(1.0, (f.chi / 120.0) ** 2);         // the slab sits at chi: expose for that distance
+    // zoomed in below 10 deg: keep surface brightness (resolved halos would otherwise dim as 1 / pixel solid angle)
+    const fovDegH = 2 * Math.atan(1 / P[2]) * 180 / Math.PI;
+    expo *= Math.max(1.0, (10 / fovDegH) ** 2);
+    gl.uniform1f(halo.u.sizeK, state.size); gl.uniform1f(halo.u.expo, expo); gl.uniform1f(halo.u.colourMode, state.colour);
+    gl.uniform1i(halo.u.pal, 9); lensUniforms(halo.u, V.pos);
+    gl.bindVertexArray(halos.vao);
+    LYR.on = false;
+    if (state.lens.strong && state.mode === "sky" && LC.nSel > 0) {
+      // halos in front of every lens: drawn as they are; behind: three layers of camera distance, ray-shot in the composite
+      let dmin = 1e9;
+      for (let k = 0; k < LC.nSel; k++) dmin = Math.min(dmin, Math.hypot(LC.sel[4 * k] - V.pos[0], LC.sel[4 * k + 1] - V.pos[1], LC.sel[4 * k + 2] - V.pos[2]));
+      dmin *= 1.02;                                               // the lens's own members are not lensed by it
+      gl.uniform2f(halo.u.dRange, 0, dmin); gl.uniform1f(halo.u.projScale, 1);
+      gl.drawArrays(gl.POINTS, 0, halos.loaded);
+      ensureLayers(W, H);
+      const dmax = 12000, q = Math.pow(dmax / dmin, 1 / 3), e = [dmin, dmin * q, dmin * q * q, dmax];
+      gl.uniform1f(halo.u.projScale, LYR.scale); gl.uniform1f(halo.u.splitX, -1);
+      for (let i = 0; i < 3; i++) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, LYR.fb[i]); gl.viewport(0, 0, W, H); gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.uniform2f(halo.u.dRange, e[i], e[i + 1]);
+        gl.drawArrays(gl.POINTS, 0, halos.loaded);
+        LYR.ds[i] = Math.sqrt(e[i] * e[i + 1]);                   // the layer's source distance
+      }
+      LYR.on = true;
+    } else {
+      gl.uniform2f(halo.u.dRange, 0, 1e30); gl.uniform1f(halo.u.projScale, 1);
+      gl.drawArrays(gl.POINTS, 0, halos.loaded);
+    }
+    gl.bindVertexArray(null);
+  }
+  gl.disable(gl.BLEND);
+  if (volOn && V.adapt && (frameNo++ % 15 === 0)) autoLevels();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, V.fb); gl.viewport(vx, vy, W, H);
+  gl.useProgram(comp.p); const u = comp.u;
+  gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, fboTex);
+  gl.activeTexture(gl.TEXTURE13); gl.bindTexture(gl.TEXTURE_2D, dmTex);
+  gl.uniform1i(u.acc, 7); gl.uniform1i(u.dmAcc, 13); gl.uniform1i(u.tLUT, 6); gl.uniform1i(u.cMW, 2); gl.uniform1i(u.cCMB, 3);
+  gl.uniform1i(u.cSD, 11); gl.uniform1i(u.cSH, 12); gl.uniform1f(u.slabMode, slabMode && slabIdx >= 0 ? 1 : 0);
+  gl.uniform1f(u.slabDM, state.w.dm > 0 && state.w.ha === 0 ? 1 : (state.w.dm > state.w.ha ? 1 : 0));
+  gl.uniformMatrix3fv(u.rot, false, V.R.m); gl.uniform3fv(u.cam, V.pos); gl.uniform3fv(u.nep, NEP);
+  gl.uniform4fv(u.proj, P); gl.uniform1f(u.sky, state.mode === "sky" ? 1 : 0);
+  gl.uniform1f(u.wMW, state.w.mw); gl.uniform1f(u.wCMB, state.w.cmb); gl.uniform1f(u.cmbSphere, state.cmbbg ? 1 : 0);
+  gl.uniform1f(u.wHalo, state.w.ha); gl.uniform1f(u.wDM, volOn || skyDMOn() ? state.w.dm : 0);
+  gl.uniform1f(u.skyDM, skyDMOn() && !volOn ? 1 : 0); gl.uniform1i(u.cDM, 14);
+  gl.uniform2f(u.dmUV, dmW / Math.ceil(W / 2), dmH / Math.ceil(H / 2)); gl.uniform1f(u.skyHK, skyHalosOn() ? 1 : 0); gl.uniform1i(u.cHK, 15); gl.uniform1f(u.hkGain, Math.pow(10, state.expo));
+  gl.uniform1f(u.dmLo, autoLo + state.dmlo); gl.uniform1f(u.dmSpan, autoSpan);
+  gl.uniform1f(u.ovPlane, state.ov.plane ? 1 : 0); gl.uniform1f(u.ovEcl, state.ov.ecl ? 1 : 0); gl.uniform1f(u.ovEws, state.ov.ews ? 1 : 0);
+  gl.uniform1f(u.pxDeg, 2 * Math.atan(1 / P[2]) * 180 / Math.PI / H); gl.uniform1f(u.splitX, state.split ? vx + splitLocal : -1);
+  const tint = f ? slabColour(f.lam).map(x => Math.pow(x, 1.6) * Math.pow(1.01 / (1 + f.z), 0.5)) : [1, 1, 1];
+  gl.uniform3fv(u.tint, tint);
+  const kgOk = state.mode === "sky" && KG.ready;
+  gl.uniform4f(u.vp, vx, vy, W, H); lensUniforms(u, V.pos);
+  gl.uniform1i(u.kgAtlas, 19); gl.uniform1f(u.lensK, kgOk ? state.lens.k : 0); gl.uniform1f(u.lensW, kgOk && state.lens.whisk ? 1 : 0);
+  if (kgOk) { const t = state.lens.src * (KG.n - 1), i0 = Math.min(KG.n - 2, Math.floor(t)), q0 = LENS.kg_planes[i0], q1 = LENS.kg_planes[i0 + 1];
+    gl.uniform1i(u.kgI0, i0); gl.uniform1i(u.kgI1, i0 + 1); gl.uniform1i(u.kgN, KG.n); gl.uniform1f(u.kgF, t - i0);
+    gl.uniform3f(u.kgS0, q0.g_max, q0.k_lo, q0.k_hi); gl.uniform3f(u.kgS1, q1.g_max, q1.k_lo, q1.k_hi); }
+  gl.uniform1f(u.pxRad, pxRadNow);
+  gl.uniform1f(u.lyrOn, LYR.on ? 1 : 0); gl.uniform1f(u.lyrScale, LYR.scale); gl.uniform3fv(u.lyrDs, LYR.ds);
+  for (let i = 0; i < 3; i++) { gl.activeTexture(gl.TEXTURE20 + i); gl.bindTexture(gl.TEXTURE_2D, LYR.tex[i]); }
+  gl.uniform1i(u.lyr0, 20); gl.uniform1i(u.lyr1, 21); gl.uniform1i(u.lyr2, 22);
+  bindQuad(comp); gl.drawArrays(gl.TRIANGLES, 0, 3);
+  return volOn;
+}
+
+function filterNow() {
+  let f = state.filt ? filterWindow() : null;
+  const slabMode = state.mode === "sky" && state.filt && slabs.length > 0;
+  if (slabMode) { updateSlab(); if (slabIdx >= 0) { const sl = slabs[slabIdx]; f = { z: sl.z, chi: sl.chi, lo: sl.r0, hi: sl.r1, lam: sl.lam_um }; } }
+  return [f, slabMode];
+}
+
+const fieldTxt = () => state.fov >= 1 ? `${state.fov.toFixed(0)}°` : state.fov >= 1 / 60 ? `${(state.fov * 60).toFixed(1)}′` : `${(state.fov * 3600).toFixed(0)}″`;
+function moveKeys(R, dt) {
+  if (state.keys.has("KeyZ")) state.fov = Math.max(0.006, state.fov * Math.exp(-1.5 * dt));   // zoom in / out (both modes)
+  if (state.keys.has("KeyX")) state.fov = Math.min(120, state.fov * Math.exp(1.5 * dt));
+  if (state.mode !== "fly") return;
+  const k = state.keys, v = state.speed * dt * (k.has("KeyQ") ? 10 : 1), mv = [0, 0, 0];
+  const add = (vec, s) => { for (let i = 0; i < 3; i++) mv[i] += vec[i] * s; };
+  if (k.has("KeyW") || k.has("ArrowUp")) add(R.f, v); if (k.has("KeyS") || k.has("ArrowDown")) add(R.f, -v);
+  if (k.has("KeyD") || k.has("ArrowRight")) add(R.r, v); if (k.has("KeyA") || k.has("ArrowLeft")) add(R.r, -v);
+  if (k.has("Space") || k.has("KeyR")) add(R.u, v); if (k.has("ShiftLeft") || k.has("KeyF")) add(R.u, -v);
+  for (let i = 0; i < 3; i++) state.pos[i] += mv[i];
+}
+
+const IPD_M = 0.064;                           // a human eye separation (m); the VR scale turns it into Mpc/h
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  if (XR.session) return;                      // the headset drives the frames
+  const dpr = Math.min(devicePixelRatio || 1, 2), W = Math.round(canvas.clientWidth * dpr), H = Math.round(canvas.clientHeight * dpr);
+  if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+  const R = rotation();
+  moveKeys(R, dt);
+  frameMs += 0.1 * (dt * 1000 - frameMs);                     // adaptive resolution of the volume: keep the page fluid
+  const [f, slabMode] = filterNow();
+  if (SBS) {
+    const e = 0.5 * IPD_M * state.vrScale, w2 = Math.floor(W / 2);
+    for (const [i, sgn] of [[0, -1], [1, 1]])
+      renderView({ R, pos: state.pos.map((x, j) => x + sgn * e * R.r[j]), proj: symProj(state.fov, w2 / H), vp: [i * w2, 0, w2, H], fb: null, adapt: i === 0 }, f, slabMode);
+  } else {
+    renderView({ R, pos: state.pos, proj: symProj(state.fov, W / H), vp: [0, 0, W, H], fb: null, adapt: true }, f, slabMode);
+  }
+  const focal = H / 2 / Math.tan(state.fov * Math.PI / 360);
+  gl.viewport(0, 0, W, H);
+
+  // comoving grid at its size then: a at the filter's redshift (sky) or at the camera's light-cone position (fly)
+  const chiCam = Math.hypot(...state.pos);
+  const zg = f ? f.z : (state.mode === "fly" ? (chiCam < R_EA ? zOfChi(chiCam) : 6) : 0), ag = 1 / (1 + zg);
+  if (state.grid) {
+    const g = Math.round(170 * dpr), pad = Math.round(16 * dpr), bottom = Math.round(64 * dpr);
+    gl.viewport(W - g - pad, bottom, g, g); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(grid.p); gl.uniformMatrix3fv(grid.u.rotT, false, R.t); gl.uniform1f(grid.u.scale, ag);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gridBuf); const lp = gl.getAttribLocation(grid.p, "p"); gl.enableVertexAttribArray(lp); gl.vertexAttribPointer(lp, 3, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.LINES, 0, gridN); gl.disable(gl.BLEND); gl.viewport(0, 0, W, H);
+    gridLab.textContent = `comoving grid, a = ${ag.toFixed(3)}`;
+  } else gridLab.textContent = "";
+
+  let txt;
+  if (state.mode === "sky") {
+    const l = ((state.yaw * 180 / Math.PI) % 360 + 360) % 360, b = state.pitch * 180 / Math.PI;
+    txt = `<span><b>l</b> ${l.toFixed(1)}°</span><span><b>b</b> ${b.toFixed(1)}°</span><span><b>field</b> ${fieldTxt()}</span>`;
+  } else {
+    txt = `<span><b>position</b> ${state.pos.map(x => x.toFixed(0)).join(", ")} Mpc/h</span><span><b>χ</b> ${chiCam.toFixed(0)} Mpc/h</span>` +
+      `<span><b>light-cone z here</b> ${chiCam < R_EA ? zOfChi(chiCam).toFixed(3) : "beyond Eä"}</span><span><b>speed</b> ${state.speed.toFixed(state.speed < 10 ? 1 : 0)} Mpc/h/s</span>` +
+      (state.fov < 30 ? `<span><b>field</b> ${fieldTxt()}</span>` : "");
+  }
+  if (state.lens.strong && state.mode === "sky" && LC.nSel) {
+    const K = 12.566370614 / (299792.458 * 299792.458);
+    let best = [0, 0];
+    for (let k = 0; k < LC.nSel; k++) { const s0 = LC.sel[4 * k + 3], dl = Math.hypot(LC.sel[4 * k] - state.pos[0], LC.sel[4 * k + 1] - state.pos[1], LC.sel[4 * k + 2] - state.pos[2]);
+      const te = K * s0 * s0 * Math.max(0, 1 - dl / 4800) * 206265; if (te > best[0]) best = [te, s0]; }
+    txt += `<span><b>strong lenses in view</b> ${LC.nSel} (largest θ<sub>E</sub> ${best[0].toFixed(0)}″, σ ${best[1].toFixed(0)} km/s)</span>`;
+  }
+  if (f) txt += `<span><b>Hα at</b> ${f.lam.toFixed(2)} µm</span><span><b>z</b> ${f.z.toFixed(3)}</span><span><b>age</b> ${ageGyr(f.z).toFixed(2)} Gyr</span>` +
+    `<span><b>lookback</b> ${(AGE0 - ageGyr(f.z)).toFixed(2)} Gyr</span><span><b>χ</b> ${f.chi.toFixed(0)} Mpc/h</span><span><b>d<sub>L</sub></b> ${((1 + f.z) * f.chi).toFixed(0)} Mpc/h</span>`;
+  if (state.roi) txt += `<span><b>region</b> ${state.roi === 1 ? "Euclid Wide (|b| > 23°, |β| > 10°, 0.84 < z < 1.88)" : "Silmarilli (b > 23°, 0.84 < z < 1.88)"}</span>`;
+  if (SBS) txt += `<span><b>stereo preview</b> eye separation ${(IPD_M * state.vrScale).toFixed(2)} Mpc/h</span>`;
+  hud.innerHTML = txt;
+  if (!SBS) placeMarks(R, focal);
+  syncFov();
+  requestAnimationFrame(frame);
+}
+
+// ---- WebXR (immersive VR): the head pose, scaled by state.vrScale (Mpc/h per metre), moves the eyes; so the real
+// eye separation becomes a cosmic one (0.064 m x scale). Left stick: fly along the gaze (fly mode); right stick up /
+// down: speed. The orientation at entry fixes the mapping XR (x right, y up, -z forward) -> Galactic axes.
+function xrBasis() {
+  const f0 = [Math.cos(state.yaw), Math.sin(state.yaw), 0], up = [0, 0, 1], r0 = [f0[1], -f0[0], 0];
+  return (v) => [0, 1, 2].map(i => r0[i] * v[0] + up[i] * v[1] - f0[i] * v[2]);      // XR vector -> world
+}
+async function enterVR() {
+  if (!navigator.xr) return;
+  const session = await navigator.xr.requestSession("immersive-vr", { optionalFeatures: ["local-floor"] });
+  await gl.makeXRCompatible();
+  session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl, { antialias: false }) });
+  XR.ref = await session.requestReferenceSpace("local");
+  XR.session = session; XR.T = xrBasis(); XR.origin = state.pos.slice(); XR.last = 0;
+  session.addEventListener("end", () => { XR.session = null; $("vr-btn").textContent = "Enter VR"; requestAnimationFrame(frame); });
+  $("vr-btn").textContent = "Exit VR";
+  session.requestAnimationFrame(xrFrame);
+}
+function xrFrame(t, xf) {
+  const session = xf.session; session.requestAnimationFrame(xrFrame);
+  const dt = XR.last ? Math.min(0.1, (t - XR.last) / 1000) : 0; XR.last = t;
+  const pose = xf.getViewerPose(XR.ref); if (!pose) return;
+  const layer = session.renderState.baseLayer, T = XR.T, sc = state.vrScale;
+  // locomotion (fly mode): left stick along the head direction, right stick y = speed
+  const hm = pose.transform.matrix, gaze = T([-hm[8], -hm[9], -hm[10]]), side = T([hm[0], hm[1], hm[2]]);
+  for (const src of session.inputSources) {
+    const gp = src.gamepad; if (!gp || gp.axes.length < 4) continue;
+    if (src.handedness === "left" && state.mode === "fly") {
+      const v = state.speed * dt;
+      for (let i = 0; i < 3; i++) XR.origin[i] += -gp.axes[3] * v * gaze[i] + gp.axes[2] * v * side[i];
+    }
+    if (src.handedness === "right") state.speed = Math.max(0.5, Math.min(20000, state.speed * Math.exp(-gp.axes[3] * dt)));
+  }
+  if (state.mode === "sky") XR.origin = [0, 0, 0];
+  state.pos = XR.origin.slice();
+  const [f, slabMode] = filterNow();
+  pose.views.forEach((view, i) => {
+    const m = view.transform.matrix, p = view.transform.position, P = view.projectionMatrix;
+    const r = T([m[0], m[1], m[2]]), u = T([m[4], m[5], m[6]]), fw = T([-m[8], -m[9], -m[10]]);
+    const R = { r, u, f: fw, m: new Float32Array([...r, ...u, ...fw]), t: new Float32Array([r[0], u[0], fw[0], r[1], u[1], fw[1], r[2], u[2], fw[2]]) };
+    const eye = T([p.x, p.y, p.z]).map((x, j) => XR.origin[j] + sc * x);
+    const vp = layer.getViewport(view);
+    renderView({ R, pos: eye, proj: [P[0], -P[8], P[5], -P[9]], vp: [vp.x, vp.y, vp.width, vp.height], fb: layer.framebuffer, adapt: i === 0, xr: true }, f, slabMode);
+  });
+}
+if (navigator.xr) navigator.xr.isSessionSupported("immersive-vr").then(ok => { if (ok) { $("vr-row").hidden = false; } }).catch(() => {});
+
+// deep links: #fly, #overlays, #dm, #filter, #split, #redshift, #euclid, #silmarilli, #hero, #outside, #massive, #void
+const tags = location.hash.slice(1).split("-");
+setMode(tags.includes("fly") ? "fly" : "sky");
+if (tags.includes("overlays")) for (const id of ["ov-plane", "ov-ecl", "ov-ews"]) { $(id).checked = true; $(id).dispatchEvent(new Event("change")); }
+if (tags.includes("dm")) { $("w-dm").value = 1; $("w-dm").dispatchEvent(new Event("input")); }
+if (tags.includes("filter")) { $("f-on").checked = true; $("f-on").dispatchEvent(new Event("change")); }
+if (tags.includes("split")) { $("split-on").checked = true; $("split-on").dispatchEvent(new Event("change")); }
+if (tags.includes("redshift")) $("c-z").click();
+if (tags.includes("nohalos")) { $("w-ha").value = 0; $("w-ha").dispatchEvent(new Event("input")); }
+if (tags.includes("euclid")) $("r-ews").click();
+if (tags.includes("silmarilli")) $("r-sil").click();
+{ const t = tags.find(x => /^fov[0-9.]+$/.test(x)); if (t) state.fov = parseFloat(t.slice(3)); }   // #fov5: field of view (deg)
+if (tags.includes("shapes")) {         // #shapes: weak lensing x50 on the halos alone (no kappa map, no whiskers), 10 deg
+  $("w-mw").value = 0; $("w-mw").dispatchEvent(new Event("input")); $("exp").value = 0.5; $("exp").dispatchEvent(new Event("input"));
+  const go = () => { if (!LENS) return setTimeout(go, 200); $("l-on").checked = true; $("l-on").dispatchEvent(new Event("change"));
+    $("l-amp").value = 1.7; $("l-amp").dispatchEvent(new Event("input")); }; go(); state.fov = 10; }
+{ const t = tags.find(x => RINGS[x]); if (t) goRing(t); }
+if (tags.includes("strong")) {         // #strong: strong lensing, zoomed on the most massive cluster (from the observer)
+  $("l-st").checked = true; $("l-st").dispatchEvent(new Event("change"));
+  { const m = [-336.6206, 792.4707, -706.8691]; state.yaw = Math.atan2(m[1], m[0]); state.pitch = Math.atan2(m[2], Math.hypot(m[0], m[1])); state.fov = 0.04; }   // exact position (targets.json): 0.1 Mpc/h is 200" at 45 Mpc/h
+  $("w-mw").value = 0; $("w-mw").dispatchEvent(new Event("input"));
+  $("exp").value = tags.includes("bright") ? 2 : 1; $("exp").dispatchEvent(new Event("input"));
+  if (tags.includes("small")) { $("size").value = 0.3; $("size").dispatchEvent(new Event("input")); }
+}
+if (tags.includes("lens") || tags.includes("lenscmb")) {        // #lens: weak lensing x20, kappa and whiskers for z = 1; #lenscmb: the CMB
+  $("w-mw").value = 0; $("w-mw").dispatchEvent(new Event("input"));
+  if (tags.includes("lenscmb")) { $("w-cmb").value = 1; $("w-cmb").dispatchEvent(new Event("input")); $("w-ha").value = 0; $("w-ha").dispatchEvent(new Event("input")); }
+  const go = () => { if (!LENS) return setTimeout(go, 200);
+    $("l-src").value = tags.includes("lenscmb") ? 1 : 0.43; $("l-src").dispatchEvent(new Event("input"));
+    $("l-k").value = 0.6; $("l-k").dispatchEvent(new Event("input")); $("l-wh").checked = true; $("l-wh").dispatchEvent(new Event("change"));
+    $("l-on").checked = true; $("l-on").dispatchEvent(new Event("change"));
+    $("l-amp").value = tags.includes("amp") ? 1.3 : 0; $("l-amp").dispatchEvent(new Event("input")); };
+  go(); }
+for (const k of ["hero", "outside", "massive", "void"]) if (tags.includes(k)) document.querySelector(`[data-go="${k}"]`).click();
+status(); requestAnimationFrame(frame);
+})();
+</script>
+
+</html>
