@@ -890,7 +890,7 @@ function lensCatLoad() {
 }
 function pickLenses(R, eye, pxRadNow, fovDiag) {
   LC.nSel = 0;
-  if (!state.lens.strong || !skyLive() || !LC.data) return;
+  if (!strongOn() || !LC.data) return;
   if ((LC.frame++ % 4) !== 0 && LC.lastEye && Math.hypot(...eye.map((x, i) => x - LC.lastEye[i])) < 1) return void (LC.nSel = LC.keep);
   const cosMax = Math.cos(Math.min(Math.PI / 2, fovDiag / 2 + 0.002)), K = 12.566370614 / (299792.458 * 299792.458), best = [];
   for (let i = 0; i < LC.n; i++) {
@@ -1061,7 +1061,7 @@ function haloTree(json) {
     // view cone: the field's half-diagonal plus a margin (a turn by less than the margin keeps the plan)
     const half = v.fovDiag / 2, cone = !v.xr && (state.mode === "sky" || v.fovDiag < 0.5236) ? Math.cos(Math.min(Math.PI, 1.3 * half + 0.035)) : 0;
     const budget = Math.min(HALO_MAX, Math.pow(2, Math.round(2 * Math.log2(Math.max(v.budget, 1e4))) / 2));
-    const ctx = { f: v.f, cone, fwd: v.fwd, budget, lens: state.lens.strong && skyLive() };
+    const ctx = { f: v.f, cone, fwd: v.fwd, budget, lens: strongOn() };
     const key = JSON.stringify([cone ? cone.toFixed(4) : 0, v.f ? [v.f.lo.toFixed(1), v.f.hi.toFixed(1)] : 0, budget, ctx.lens]);
     const turned = cone && t.fwd && Math.acos(Math.min(1, v.fwd[0] * t.fwd[0] + v.fwd[1] * t.fwd[1] + v.fwd[2] * t.fwd[2])) > 0.3 * half + 0.017;
     if (now - t.tPlan > 300 && (!t.eye || key !== t.key || turned || Math.hypot(eye[0] - t.eye[0], eye[1] - t.eye[1], eye[2] - t.eye[2]) > 1)) {
@@ -1503,7 +1503,7 @@ function renderView(V, f, slabMode) {
     const nHalo = halos.fb ? (XR.session ? Math.min(halos.loaded, Math.round(XR_HALO_CAP * PERF.q)) : Math.round(halos.loaded * PERF.q))
                            : Math.min(halos.loaded, Math.round(haloBudget));
     LYR.on = false;
-    if (state.lens.strong && skyLive() && LC.nSel > 0) {
+    if (strongOn() && LC.nSel > 0) {
       // halos in front of every lens: drawn as they are; behind: three layers of camera distance, ray-shot in the composite
       let dmin = 1e9;
       for (let k = 0; k < LC.nSel; k++) dmin = Math.min(dmin, Math.hypot(LC.sel[4 * k] - V.pos[0], LC.sel[4 * k + 1] - V.pos[1], LC.sel[4 * k + 2] - V.pos[2]));
@@ -1690,40 +1690,66 @@ const XR_HALO_CAP = 1500000;   // live halos drawn per eye in a headset (the bri
 // Detail level q (0.02-1): scales the live halos drawn, the cosmic-web segments (depth), the walls (q >= 0.3) and the
 // resolution (canvas pixel ratio; headsets: WebXR viewport scale). Set by hand (Detail panel, VR menu) or by the
 // frame-rate governor: the measured frame rate against the display's (desktop: 60 fps; auto off by default) lowers or
-// raises it; in a headset (always auto on entering) the most expensive options are turned off when still too slow
-// (strong lensing from q <= 0.3, the rest at the floor).
-const PERF = { auto: false, desk: { auto: false, q: 1 }, show: false, q: 1, ceil: 1, wt: 0, wn: 0, fps: 0, target: 72, slow: 0, fast: 0, hudT: 0, menuT: 0 };
-const PERF_QMIN = 0.02;
-const PERF_SHED = [["Strong lensing", () => state.lens.strong, () => setCheck("l-st", false), 0.3],
-                   ["Lensing deflections", () => state.lens.weak, () => setCheck("l-on", false), PERF_QMIN],
+// raises it; in a headset (always auto on entering) the most expensive options are turned off when still too slow (at
+// the floor). It searches for the level and settles: it remembers the highest level that was fluid (lo) and the lowest
+// that was too slow (hi), drops back to lo when too slow (else by the measured shortfall: frame time ~ detail; 3 s just
+// short of the target count as too slow), halves the gap (geometric) when fluid, and stays at lo once
+// hi / lo < 1.15. Settled, it probes one step up only after 30 s (then 1, 2, 4 min after each failed probe): with vsync
+// the frame rate cannot show spare time, so a probe is the only way to see that the scene got cheaper. Any change of
+// an option forgets hi and probes again within 2 s. (The old rule raised its ceiling at every step up and oscillated
+// around the right level: halos and web appearing and disappearing.)
+const PERF = { auto: false, desk: { auto: false, q: 1 }, show: false, q: 1, lo: 0, hi: 0, probeT: 0, wait: 30, probing: false,
+               wt: 0, wn: 0, fps: 0, target: 72, slow: 0, fast: 0, mid: 0, hudT: 0, menuT: 0 };
+const PERF_QMIN = 0.02, PERF_SETTLE = 1.15, STRONG_QMIN = 0.15;
+// strong lensing: live sky only, never in a headset (a moving head breaks it), not under 15 % detail (nor its halos)
+const strongOn = () => state.lens.strong && skyLive() && !XR.session && PERF.q >= STRONG_QMIN;
+const PERF_SHED = [["Lensing deflections", () => state.lens.weak, () => setCheck("l-on", false), PERF_QMIN],
                    ["Shear whiskers", () => state.lens.whisk, () => setCheck("l-wh", false), PERF_QMIN],
                    ["Convergence map", () => state.lens.k > 0, () => setRange("l-k", 0), PERF_QMIN]];
 const perfScale = () => PERF.q >= 0.4 ? 1 : PERF.q >= 0.15 ? 0.85 : PERF.q >= 0.05 ? 0.7 : 0.6;   // few steps: each one resizes the buffers
 const perfText = () => `${Math.round(PERF.fps)} / ${Math.round(PERF.target)} fps · detail ${Math.round(100 * PERF.q)} %`;
+function perfReset(soon) { PERF.hi = 0; PERF.slow = PERF.fast = PERF.mid = 0; PERF.wait = 30; PERF.probing = false;
+  PERF.probeT = performance.now() / 1000 + (soon ? 2 : 0); }
+function perfSet(q) {
+  const was = PERF.q >= STRONG_QMIN; PERF.q = Math.min(1, Math.max(PERF_QMIN, q));
+  if (state.lens.strong && skyLive() && !XR.session && was !== PERF.q >= STRONG_QMIN)
+    toast(was ? "Strong lensing paused (detail under 15 %)" : "Strong lensing back");
+}
 function perfUpdate(dt, session) {                       // decisions on 0.5-s windows (frames / time): steadier than a running mean
   if (!dt || document.hidden) return;
   PERF.target = session ? session.frameRate || 72 : 60; PERF.wt += dt; PERF.wn++;
   if (PERF.wt < 0.5) return;
   PERF.fps = PERF.wn / PERF.wt; PERF.wt = PERF.wn = 0; perfShow();
   if (!PERF.auto) return;
-  const r = PERF.fps / PERF.target;
-  if (r < 0.85) { PERF.slow++; PERF.fast = 0; } else if (r > 0.93) { PERF.fast++; PERF.slow = Math.max(0, PERF.slow - 1); } else PERF.fast = Math.max(0, PERF.fast - 1);
-  if (PERF.slow >= 2) {                                    // too slow for 1 s: an option off, or less detail
-    PERF.slow = 0; PERF.ceil = PERF.q;
-    const sh = session && PERF_SHED.find(([, on, , qs]) => on() && PERF.q <= qs);
+  const r = PERF.fps / PERF.target, now = performance.now() / 1000;
+  if (r < 0.85) { PERF.slow++; PERF.fast = PERF.mid = 0; } else if (r > 0.93) { PERF.fast++; PERF.mid = 0; PERF.slow = Math.max(0, PERF.slow - 1); }
+  else { PERF.fast = Math.max(0, PERF.fast - 1); if (++PERF.mid >= 6) { PERF.mid = 0; PERF.slow = 2; } }   // 3 s just short of fluid: too slow
+  if (PERF.slow >= 2) {                                    // too slow for 1 s
+    PERF.slow = 0; PERF.hi = PERF.q;
+    if (PERF.probing) { PERF.probing = false; PERF.wait = Math.min(240, 2 * PERF.wait); }   // the probe failed: wait longer
+    PERF.probeT = now + PERF.wait;
+    if (PERF.lo > 0 && PERF.lo >= PERF.q) PERF.lo = 0;     // the fluid level is no longer fluid: search below again
+    const sh = session && PERF.q <= PERF_QMIN && PERF_SHED.find(([, on]) => on());
     if (sh) { sh[2](); toast(sh[0] + " off (frame rate)"); }
-    else PERF.q = Math.max(PERF_QMIN, PERF.q * (r < 0.5 ? 0.5 : 0.7));
-  } else if (PERF.fast >= 3 && PERF.q < 1) {               // fluid for 1.5 s: more detail; the level that was too slow is
-    PERF.fast = 0; PERF.ceil = Math.min(1, PERF.ceil * 1.6);  // approached in smaller steps
-    PERF.q = Math.min(1, PERF.q * (PERF.q * 1.4 <= 0.9 * PERF.ceil ? 1.4 : 1.1));
+    else perfSet(PERF.lo > 0 ? PERF.lo : PERF.q * Math.min(0.9, Math.max(0.5, 0.95 * r)));   // frame time ~ detail: one step
+  } else if (PERF.fast >= 3) {                             // fluid for 1.5 s
+    PERF.fast = 0; PERF.lo = PERF.q;
+    if (PERF.probing) { PERF.probing = false; PERF.wait = 30; }   // the probe held
+    if (PERF.q >= 1) return;
+    if (PERF.hi > PERF.q * PERF_SETTLE) perfSet(Math.sqrt(PERF.q * PERF.hi));   // searching: halve the gap
+    else if (!PERF.hi) perfSet(PERF.q * 1.4);              // nothing too slow known: climb
+    else if (now >= PERF.probeT) { PERF.probing = true; perfSet(PERF.q * PERF_SETTLE); }   // settled: an occasional probe
   }
 }
+// any option changed by the viewer (the scene may be cheaper or dearer now): search again
+document.addEventListener("change", e => { if (e.target.id !== "dt-auto") perfReset(true); }, true);
+document.addEventListener("input", e => { if (e.target.id !== "dt-q") perfReset(true); }, true);
 function perfShow() {                                      // the Detail panel follows the level (also when set in the headset)
   $("dt-q").value = Math.log10(PERF.q); $("o-dtq").textContent = Math.round(100 * PERF.q) + " %"; $("dt-auto").checked = PERF.auto;
   $("dt-fps").textContent = `${Math.round(PERF.fps)} fps` + (XR.session ? " (headset)" : "");
 }
-$("dt-q").addEventListener("input", e => { PERF.q = Math.pow(10, parseFloat(e.target.value)); PERF.auto = false; perfShow(); });
-$("dt-auto").addEventListener("change", e => { PERF.auto = e.target.checked; PERF.ceil = 1; PERF.slow = PERF.fast = 0; });
+$("dt-q").addEventListener("input", e => { perfSet(Math.pow(10, parseFloat(e.target.value))); PERF.auto = false; perfShow(); });
+$("dt-auto").addEventListener("change", e => { PERF.auto = e.target.checked; PERF.lo = 0; perfReset(false); });
 perfShow();
 function xrBasis() {
   const f0 = [Math.cos(state.yaw), Math.sin(state.yaw), 0], up = [0, 0, 1], r0 = [f0[1], -f0[0], 0];
@@ -1780,15 +1806,13 @@ function xrGo(i, fw) {                                    // a bookmarked view, 
 }
 const XR_ZMAX = 5000;
 const S_HERO = [Math.cos(0.6) * Math.cos(0.1), Math.sin(0.6) * Math.cos(0.1), Math.sin(0.1)];
-const lensState = () => (state.lens.weak ? 1 : 0) + (state.lens.strong ? 2 : 0);
-const LENS_TXT = ["off", "weak", "strong", "weak + strong"];
 function menuItems() {
   const sky = state.mode === "sky", live = !sky || state.render === "live", views = sky ? SKY_VIEWS : FLY_VIEWS;
   const it = [["Controller guide", "A / trigger: show", null, () => { XP.page = "help"; }],
               ["Mode", sky ? "Sky" : "Fly", d => xrSetMode(sky ? "fly" : "sky")],
               ["Frame rate", perfText() + (PERF.show ? " · shown" : ""), d => { PERF.show = !PERF.show; }],
-              ["Detail level", PERF.auto ? "auto (A: fix it)" : "fixed (A: auto)", d => { PERF.auto = false; PERF.q = Math.min(1, Math.max(PERF_QMIN, PERF.q * (d > 0 ? 1.5 : 1 / 1.5))); },
-               () => { PERF.auto = !PERF.auto; PERF.ceil = 1; PERF.slow = PERF.fast = 0; }]];
+              ["Detail level", PERF.auto ? "auto (A: fix it)" : "fixed (A: auto)", d => { PERF.auto = false; perfSet(PERF.q * (d > 0 ? 1.5 : 1 / 1.5)); },
+               () => { PERF.auto = !PERF.auto; PERF.lo = 0; perfReset(false); }]];
   if (sky) it.push(["Rendering", state.render === "pre" ? "pre-rendered" : "live", d => setRender(state.render === "pre" ? "live" : "pre")]);
   it.push(["Halo exposure", (state.expo >= 0 ? "+" : "") + state.expo.toFixed(1), d => setRange("exp", state.expo + 0.2 * d)]);
   if (live) it.push(["Halo colour", state.colour === 0 ? "σv and z" : "redshift", d => $(state.colour === 0 ? "c-z" : "c-phys").click()],
@@ -1800,7 +1824,7 @@ function menuItems() {
             ["CMB", state.w.cmb > 0 ? "on" : "off", d => toggleRange("w-cmb")],
             ["Convergence κ map", state.lens.k > 0 ? "on" : "off", d => setRange("l-k", state.lens.k > 0 ? 0 : 0.6)],
             ["Shear whiskers", state.lens.whisk ? "on" : "off", d => setCheck("l-wh", !state.lens.whisk)]);
-    if (live) it.push(["Lensing deflections", LENS_TXT[lensState()], d => { const n = (lensState() + (d < 0 ? 3 : 1)) % 4; setCheck("l-on", !!(n & 1)); setCheck("l-st", !!(n & 2)); }]);
+    if (live) it.push(["Lensing deflections", state.lens.weak ? "weak (no strong lensing in VR)" : "off", d => setCheck("l-on", !state.lens.weak)]);
     it.push(["Zoom", "×" + XR.zoom.toPrecision(3), d => { XR.zoom = Math.min(XR_ZMAX, Math.max(1, XR.zoom * Math.pow(2, d))); }]);
   } else {
     it.push(["CMB sphere", state.cmbbg ? "on" : "off", d => setCheck("cmbbg", !state.cmbbg)],
@@ -1942,9 +1966,9 @@ async function enterVR() {
   session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl, { antialias: false }) });
   XR.ref = await session.requestReferenceSpace("local");
   XR.session = session; XR.M = xrBasis(); XR.origin = state.pos.slice(); XR.last = 0; XR.zoom = 1; XR.prev = {}; XR.held = {};
-  PERF.desk = { auto: PERF.auto, q: PERF.q }; Object.assign(PERF, { auto: true, q: 1, ceil: 1, wt: 0, wn: 0, slow: 0, fast: 0 });
+  PERF.desk = { auto: PERF.auto, q: PERF.q }; Object.assign(PERF, { auto: true, q: 1, lo: 0, wt: 0, wn: 0 }); perfReset(false);
   panelInit(); XP.menu = true; XP.page = "help"; XP.sel = 0; XP.quad = null; XP.dirty = true;   // first the controller guide (placed at the first pose)
-  session.addEventListener("end", () => { XR.session = null; Object.assign(PERF, PERF.desk, { ceil: 1, slow: 0, fast: 0 }); perfShow(); $("vr-btn").textContent = "Enter VR"; $("vr-float").hidden = false; requestAnimationFrame(frame); });
+  session.addEventListener("end", () => { XR.session = null; Object.assign(PERF, PERF.desk, { lo: 0 }); perfReset(false); perfShow(); $("vr-btn").textContent = "Enter VR"; $("vr-float").hidden = false; requestAnimationFrame(frame); });
   $("vr-btn").textContent = "Exit VR"; $("vr-float").hidden = true;
   session.requestAnimationFrame(xrFrame);
 }
@@ -1972,7 +1996,7 @@ function xrInput(session, dt, hm) {
     if (hand === "right") {
       if (down(4)) { xrSetMode(sky ? "fly" : "sky"); toast(sky ? "Fly mode" : "Sky mode"); }
       if (down(5)) { XP.menu = true; XP.page = "menu"; XP.sel = 0; XP.dirty = true; XP.quad = placePanel(hm, 1.3, 1.2, 0.9, 0.15); }
-      if (down(3)) { if (sky) { if (state.render !== "live") setRender("live"); const on = lensState() === 0; setCheck("l-on", on); setCheck("l-st", on); toast("Lensing " + (on ? "on (live rendering)" : "off")); }
+      if (down(3)) { if (sky) { if (state.render !== "live") setRender("live"); const on = !state.lens.weak; setCheck("l-on", on); toast("Lensing " + (on ? "on (live rendering; weak only in VR)" : "off")); }
                      else { document.querySelector('[data-go="observer"]').click(); XR.origin = [0, 0, 0]; toast("Back to the observer"); } }
       if (b[1]) setRange("exp", state.expo + 0.8 * dt);
       if (sky) {
