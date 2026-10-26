@@ -1404,7 +1404,8 @@ const mminEff = () => state.mminAuto ? Math.min(15, 12 - 0.55 * Math.log10(PERF.
 const SUPD = "⁰¹²³⁴⁵⁶⁷⁸⁹", massTxt = x => { const e = Math.floor(x + 1e-9); return `${Math.pow(10, x - e).toFixed(1)}×10${String(e).split("").map(c => SUPD[+c]).join("")} M☉/h`; };
 state.mmin = 12; state.mminAuto = true;
 const mminShow = () => { const x = mminEff(); $("mmin").value = x; $("o-mmin").textContent = massTxt(x) + (state.mminAuto ? " (auto)" : ""); };
-$("mmin").addEventListener("input", e => { state.mmin = parseFloat(e.target.value); setCheck("mmin-auto", false); mminShow(); });
+const mminSet = x => { state.mminAuto = false; $("mmin-auto").checked = false; state.mmin = Math.min(15, Math.max(12, x)); mminShow(); };   // by hand: auto off
+$("mmin").addEventListener("input", e => mminSet(parseFloat(e.target.value)));
 $("mmin-auto").addEventListener("change", e => { if (!e.target.checked) state.mmin = mminEff(); state.mminAuto = e.target.checked; mminShow(); });
 bindRange("dm-lo", "o-dmlo", x => state.dmlo = x, x => (x >= 0 ? "+" : "") + x.toFixed(1));
 bindRange("f-z", "o-z", x => { state.fz = x; filtMoved = performance.now(); }, () => "z = " + (slabs.length ? slabs[slabWanted()].z : filterWindow().z).toFixed(2));
@@ -1864,7 +1865,7 @@ function menuItems() {
   if (live) it.push(["Halo colour", state.colour === 0 ? "σv and z" : "redshift", d => $(state.colour === 0 ? "c-z" : "c-phys").click()],
                     ["Halo size", "×" + state.size.toFixed(2), d => setRange("size", state.size + 0.1 * d)],
                     ["Minimum halo mass", massTxt(mminEff()) + (state.mminAuto ? " (auto; A: fix)" : " (A: auto)"),
-                     d => { state.mmin = Math.min(15, Math.max(12, mminEff() + 0.1 * d)); setCheck("mmin-auto", false); mminShow(); },
+                     d => mminSet(mminEff() + 0.1 * d),
                      () => { setCheck("mmin-auto", !state.mminAuto); }]);
   if (sky) {
     it.push(["Milky Way", state.w.mw > 0 ? "on" : "off", d => toggleRange("w-mw")],
