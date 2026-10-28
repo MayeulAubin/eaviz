@@ -1283,7 +1283,7 @@ const TREE = (() => {
         for (let d = 0; d < 8; d++) { const c = name(n.l - 1, 2 * n.i + (d & 1), 2 * n.j + (d >> 1 & 1), 2 * n.k + (d >> 2)); if (t.node.has(c)) n.kids.push(c); }
       } else n.kids = null;
       for (const [nm, n] of t.node) if (n.kids) for (const c of n.kids) t.node.get(c).up = nm;
-      t.top = [...t.node.keys()].filter(k => t.node.get(k).l === j.levels.length - 1);
+      t.top = [...t.node.keys()].filter(k => !t.node.get(k).up);   // roots (a partly uploaded tree may lack some parents)
       t.ready = true; status();
     }).catch(() => { t.missing = true; webStart(); });   // the old fixed ball
   };
