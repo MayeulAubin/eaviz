@@ -1122,8 +1122,9 @@ function status() { const parts = [];
   if (!CUBE.mw.ready && !CUBE.mw.missing && state.w.mw > 0) parts.push("Milky Way");
   if (!CUBE.cmb.ready && !CUBE.cmb.missing) parts.push("CMB");
   if (halos.loaded < halos.total) parts.push(`halos ${Math.round(100 * halos.loaded / halos.total)}%`);
+  if (webBall() && TREE.ready && TREE.loaded < TREE.plan.length) parts.push(`cosmic web ${Math.round(100 * TREE.loaded / TREE.plan.length)}%`);
   if (webWanted() && WEBL.started && !WEBL.missing && WEBL.loaded < WEBL.total) parts.push(`cosmic web ${WEBL.loaded}/${WEBL.total}`);
-  if (webWanted() && WEBL.missing) parts.push("cosmic web not available");
+  if (webWanted() && TREE.missing && WEBL.missing) parts.push("cosmic web not available");
   if (webSlab() && SLABW.loading >= 0) parts.push("cosmic web of the slab");
   if (webSlab() && SLABW.meta && slabWanted() >= 0 && !slabWebHas(slabWanted())) parts.push("cosmic web: this slab is not computed yet (TGCC run in progress)");
   if (state.mode === "sky" && state.w.dm > 0 && CUBE.dmk.want && !CUBE.dmk.ready && !CUBE.dmk.missing) parts.push(MATTER.kind === "web" ? "cosmic-web sky" : "dark-matter sky");
@@ -1259,6 +1260,105 @@ function webStart() {
     }
   }).catch(() => { WEBL.missing = true; status(); });
 }
+// the streamed web (pipelines/cosmicweb/cweb_tree.py): an octree on the tile grid, 128 / 256 / 512 Mpc/h nodes with the
+// filaments resampled at 1 / 2 / 4 Mpc/h (all of them at every level). Starting from the 512 Mpc/h nodes nearest the
+// camera, the plan adds or refines (a node -> its children) whatever has the largest on-screen step (step / distance,
+// a missing node counts as step 8) while the segment budget lasts, so the web follows the camera anywhere. A planned
+// node still loading is covered by its loaded ancestor, or by its loaded children (no double draw). Without
+// cweb_tree.json: the fixed ball of cweb_fil.json.
+const WEB_MAX = 12000000, XR_WEB_MAX = 3000000;
+const TREE = (() => {
+  const t = { started: false, ready: false, missing: false, meta: null, node: new Map(), cache: new Map(), wanted: new Set(),
+              inflight: 0, plan: [], drawn: [], drawnKeys: new Set(), eye: null, key: "", tPlan: 0, segs: 0, loaded: 0, total: 0 };
+  const name = (l, i, j, k) => l + "/" + i + "_" + j + "_" + k;
+  t.start = () => {
+    if (t.started) return; t.started = true;
+    fetch(DATA + "cweb_tree.json").then(r => { if (!r.ok) throw new Error(); return r.json(); }).then(j => {
+      t.meta = j; const c = j.corner;
+      j.levels.forEach((L, l) => { for (const [i, jj, k, segs, nm] of L.nodes) {
+        const s = L.side, lo = [c + i * s, c + jj * s, c + k * s];
+        t.node.set(name(l, i, jj, k), { l, i, j: jj, k, segs, nm, lo, s, step: L.step, kids: [] });
+      } });
+      for (const [nm, n] of t.node) if (n.l > 0) {
+        for (let d = 0; d < 8; d++) { const c = name(n.l - 1, 2 * n.i + (d & 1), 2 * n.j + (d >> 1 & 1), 2 * n.k + (d >> 2)); if (t.node.has(c)) n.kids.push(c); }
+      } else n.kids = null;
+      for (const [nm, n] of t.node) if (n.kids) for (const c of n.kids) t.node.get(c).up = nm;
+      t.top = [...t.node.keys()].filter(k => t.node.get(k).l === j.levels.length - 1);
+      t.ready = true; status();
+    }).catch(() => { t.missing = true; webStart(); });   // the old fixed ball
+  };
+  const dist = (n, e) => { const d = [0, 1, 2].map(a => Math.max(n.lo[a] - e[a], e[a] - n.lo[a] - n.s, 0)); return Math.max(Math.hypot(...d), 1); };
+  function plan(eye, budget) {
+    const heap = [], push = (e) => { heap.push(e); let i = heap.length - 1;
+      while (i > 0) { const p = (i - 1) >> 1; if (heap[p][0] >= heap[i][0]) break; [heap[p], heap[i]] = [heap[i], heap[p]]; i = p; } };
+    const pop = () => { const top = heap[0], last = heap.pop();
+      if (heap.length) { heap[0] = last; let i = 0;
+        for (;;) { const l = 2 * i + 1, r = l + 1; let m = i;
+          if (l < heap.length && heap[l][0] > heap[m][0]) m = l; if (r < heap.length && heap[r][0] > heap[m][0]) m = r;
+          if (m === i) break; [heap[m], heap[i]] = [heap[i], heap[m]]; i = m; } }
+      return top; };
+    for (const k of t.top) push([8 / dist(t.node.get(k), eye), k, "add"]);
+    const sel = new Set(); let n = 0, skips = 0;
+    while (heap.length && skips < 64) {
+      const [, k, op] = pop(), nd = t.node.get(k);
+      if (op === "add") {
+        if (n + nd.segs > budget) { skips++; continue; }
+        sel.add(k); n += nd.segs;
+      } else {                                   // refine: k -> its children
+        const add = nd.kids.reduce((a, c) => a + t.node.get(c).segs, 0) - nd.segs;
+        if (n + add > budget) { skips++; continue; }
+        sel.delete(k); n += add; for (const c of nd.kids) sel.add(c);
+      }
+      for (const c of op === "add" ? [k] : nd.kids) { const m = t.node.get(c); if (m.kids && m.kids.length) push([m.step / dist(m, eye), c, "refine"]); }
+    }
+    t.total = n;
+    return [...sel].sort((a, b) => dist(t.node.get(a), eye) - dist(t.node.get(b), eye));
+  }
+  async function load(k) {
+    const r = await fetch(DATA + "cweb_tree/" + k + ".bin"); if (!r.ok) throw new Error(k);
+    const buf = await new Response(r.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+    return webUpload(webParse(buf, t.meta.version));
+  }
+  function fetchMore() {
+    for (const k of t.plan) {
+      if (t.inflight >= 6) return;
+      if (t.cache.has(k) || t.wanted.has(k)) continue;
+      t.wanted.add(k); t.inflight++;
+      load(k).then(pt => { t.cache.set(k, { pt, used: performance.now() }); t.segs += pt.n; t.redraw(); })
+        .catch(e => console.warn("cosmic-web node", k, e)).finally(() => { t.wanted.delete(k); t.inflight--; fetchMore(); });
+    }
+  }
+  function evict(keep) {                         // nodes neither drawn nor planned, least recently used first, down to 1.5 x the budget
+    if (t.segs <= 1.5 * WEB_MAX) return;
+    const old = [...t.cache].filter(([k]) => !keep.has(k)).sort((a, b) => a[1].used - b[1].used);
+    for (const [k, v] of old) { if (t.segs <= 1.5 * WEB_MAX) break; webFree([v.pt]); t.cache.delete(k); t.segs -= v.pt.n; }
+  }
+  t.redraw = () => {                             // the planned nodes loaded; for the others a loaded ancestor or all children
+    const out = new Set(), now = performance.now(); let loaded = 0;
+    for (const k of t.plan) {
+      if (t.cache.has(k)) { out.add(k); loaded++; continue; }
+      let a = t.node.get(k).up; while (a && !t.cache.has(a)) a = t.node.get(a).up;
+      if (a) { out.add(a); continue; }
+      const kids = t.node.get(k).kids;
+      if (kids && kids.length && kids.every(c => t.cache.has(c))) kids.forEach(c => out.add(c));
+    }
+    for (const k of [...out]) { let a = t.node.get(k).up; while (a) { if (out.has(a)) { out.delete(k); break; } a = t.node.get(a).up; } }
+    t.drawnKeys = out; t.drawn = [...out].map(k => { const c = t.cache.get(k); c.used = now; return c.pt; });
+    t.loaded = loaded; status();
+  };
+  t.update = (eye, budget) => {                  // re-plans at most every 0.3 s when the camera moved > 5 Mpc/h or the budget changed
+    if (!t.ready) return;
+    const now = performance.now(), b = Math.min(WEB_MAX, Math.pow(2, Math.round(2 * Math.log2(Math.max(budget, 1e5))) / 2));
+    if (now - t.tPlan < 300 || (t.eye && b === t.b && Math.hypot(eye[0] - t.eye[0], eye[1] - t.eye[1], eye[2] - t.eye[2]) < 5)) return;
+    t.tPlan = now; t.eye = eye.slice(); t.b = b;
+    const p = plan(eye, b);
+    if (p.length === t.plan.length && p.every((k, i) => k === t.plan[i])) return;
+    t.plan = p; t.redraw();
+    const keep = new Set([...p, ...t.drawnKeys]); for (const k of t.plan) { let a = t.node.get(k).up; while (a) { keep.add(a); a = t.node.get(a).up; } }
+    evict(keep); fetchMore();
+  };
+  return t;
+})();
 // the filter's cosmic web: one file set per slab of slabs.json (pipelines/cosmicweb/fil_slabs.py, every filament of the
 // shell, not thinned), loaded when the filter moves there; slabs not computed yet have no files
 const SLABW = { meta: null, idx: -1, loading: -1, parts: [], missing: false };
@@ -1270,7 +1370,10 @@ function slabWebUpdate() {
   if (!SLABW.meta || i < 0 || i === SLABW.idx || SLABW.loading >= 0 || !filtSettled()) return;
   if (!slabWebHas(i)) { webFree(SLABW.parts); SLABW.parts = []; SLABW.idx = i; status(); return; }
   SLABW.loading = i; status();
-  Promise.all(SLABW.meta.slabs[i].files.map(f => fetch(DATA + "cweb_slabs/" + f).then(r => { if (!r.ok) throw new Error(f); return r.arrayBuffer(); })))
+  // far slabs hold up to ~12 M segments (~0.45 GB on the GPU): a headset loads only its first parts, up to XR_WEB_MAX
+  const sl = SLABW.meta.slabs[i], nSeg = Math.max(1, sl.vertices - sl.polylines);
+  const files = XR.session ? sl.files.slice(0, Math.max(1, Math.floor(sl.files.length * Math.min(1, XR_WEB_MAX / nSeg)))) : sl.files;
+  Promise.all(files.map(f => fetch(DATA + "cweb_slabs/" + f).then(r => { if (!r.ok) throw new Error(f); return r.arrayBuffer(); })))
     .then(bufs => { const parts = bufs.map(b => webUpload(webParse(b, SLABW.meta.version || 3)));
       webFree(SLABW.parts); SLABW.parts = parts; SLABW.idx = i; })
     .catch(e => { console.warn("cosmic-web slab", i, e); webFree(SLABW.parts); SLABW.parts = []; SLABW.idx = i; })
@@ -1311,10 +1414,11 @@ const webWanted = () => webBall() || webSlab();
 function webParts() {
   if (webSlab() && slabWebHas(slabWanted()) && SLABW.idx === slabWanted()) return SLABW.parts;
   if (webSlab() && slabWebHas(slabWanted())) return SLABW.parts.length ? SLABW.parts : null;   // the next slab is loading
+  if (webBall() && TREE.ready) return TREE.drawn.length ? TREE.drawn : null;
   return webBall() && WEBL.ready ? WEBL.parts : null;
 }
 const webOn = () => webWanted() && !!webParts();
-function webMaybe() { if (webBall()) { webStart(); wallsStart(); } if (webSlab()) slabWebUpdate(); }
+function webMaybe() { if (webBall()) { TREE.start(); wallsStart(); } if (webSlab()) slabWebUpdate(); }
 function ensureFBO(w, h) {
   if (fbo && fboW === w && fboH === h) return;
   fboW = w; fboH = h; fboTex = gl.createTexture(); gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, fboTex);
@@ -1577,6 +1681,7 @@ function renderView(V, f, slabMode) {
   }
   gl.disable(gl.BLEND);
   if (volOn && V.adapt && (frameNo++ % 15 === 0)) autoLevels();
+  if (webBall()) TREE.update(V.pos, (XR.session ? XR_WEB_MAX : WEB_MAX) * PERF.q);   // the detail level sets the tree's budget
   const wParts = webOn() ? webParts() : null, slabWebSide = slabMode && webSlab();
   if (wParts || slabWebSide) {                     // the web buffer; on a filter slab's web side it is cleared even when empty
     ensureWebFBO(W, H); gl.bindFramebuffer(gl.FRAMEBUFFER, webFbo); gl.viewport(0, 0, W, H); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
@@ -1597,7 +1702,8 @@ function renderView(V, f, slabMode) {
     gl.uniform1f(wu.w0, WEBL.w0); gl.uniform1f(wu.trim, WEBL.trim); gl.uniform1f(wu.gain, WEBL.gain * state.w.dm); gl.uniform1f(wu.fadeD, WEBL.fadeD); gl.uniform1f(wu.fade0, f0);
     gl.uniform1f(wu.chiLo, cLo); gl.uniform1f(wu.chiHi, cHi); gl.uniform1f(wu.roi, state.roi); gl.uniform3fv(wu.nep, NEP);
     // a segment budget from the detail level; the parts and their segments go nearest first, so it cuts depth
-    let left = PERF.q < 1 ? PERF.q * wParts.reduce((a, pt) => a + pt.n, 0) : Infinity; const wN = wParts.map(pt => { const n = Math.min(pt.n, Math.max(0, left)); left -= n; return n; });
+    // (the tree's nodes are planned within the budget already)
+    let left = PERF.q < 1 && wParts !== TREE.drawn ? PERF.q * wParts.reduce((a, pt) => a + pt.n, 0) : Infinity; const wN = wParts.map(pt => { const n = Math.min(pt.n, Math.max(0, left)); left -= n; return n; });
     wParts.forEach((pt, i) => { if (wN[i] > 0) { gl.bindVertexArray(pt.vao); gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, wN[i]); } });
     gl.useProgram(clp.p); const cu = clp.u;
     gl.uniformMatrix3fv(cu.rotT, false, V.R.t); gl.uniform3fv(cu.cam, V.pos); gl.uniform4fv(cu.proj, P); gl.uniform1f(cu.focal, focal);
