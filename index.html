@@ -1435,8 +1435,8 @@ function ensureWebFBO(w, h) {
   if (!webFbo) webFbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, webFbo);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, webTex, 0); gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 }
-const webMatter = () => state.mode === "fly" || MATTER.kind === "web";
-const webBall = () => state.w.dm > 0 && (state.mode === "fly" || (skyLive() && MATTER.kind === "web"));
+const webMatter = () => state.mode === "fly" || (skyLive() && MATTER.kind === "web");   // sky: Live rendering only (Pre-rendered: the faces)
+const webBall = () => state.w.dm > 0 && webMatter();
 const webSlab = () => state.w.dm > 0 && state.filt && webMatter() && !!SLABW.meta;
 const webWanted = () => webBall() || webSlab();
 // the parts to draw: the filter slab's web when it is computed, else the ball (the shader cuts it to the filter window)
