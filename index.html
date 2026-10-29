@@ -402,12 +402,12 @@ void main() {
 const WEB_FS = `#version 300 es
 precision highp float;
 in float vX; in float vL; in float vD; in float vPix; in float vTip;
-uniform float gain, fadeD, fade0;
+uniform float gain, fadeD, fade0, edge;
 out vec4 o;
 void main() {
   float prof = exp(-2.5 * vX * vX);
   float I = gain * 0.28 * pow(10.0, 0.55 * clamp(vL, -0.5, 2.5)) * prof * exp(-max(vD - fade0, 0.0) / fadeD)
-          * mix(0.35, 1.0, vPix) * smoothstep(0.0, 1.0, vTip);
+          * mix(0.35, 1.0, vPix) * smoothstep(0.0, 1.0, vTip) * (1.0 - smoothstep(0.8 * edge, edge, vD));
   float t = (vL - 0.2) / 1.8;
   vec3 c0 = vec3(0.10, 0.22, 0.65), c1 = vec3(0.35, 0.65, 1.0), c2 = vec3(1.0, 0.97, 0.92);
   vec3 col = t < 0.5 ? mix(c0, c1, clamp(2.0 * t, 0.0, 1.0)) : mix(c1, c2, clamp(2.0 * t - 1.0, 0.0, 1.0));
@@ -435,10 +435,11 @@ void main() {
 const CL_FS = `#version 300 es
 precision highp float;
 in vec2 vQ; in float vL; in float vD; in float vK;
-uniform float gain, fadeD, fade0;
+uniform float gain, fadeD, fade0, edge;
 out vec4 o;
 void main() {
-  float I = gain * pow(10.0, 0.6 * (vL - 1.5)) * vK * exp(-0.5 * dot(vQ, vQ)) * exp(-max(vD - fade0, 0.0) / fadeD);
+  float I = gain * pow(10.0, 0.6 * (vL - 1.5)) * vK * exp(-0.5 * dot(vQ, vQ)) * exp(-max(vD - fade0, 0.0) / fadeD)
+          * (1.0 - smoothstep(0.8 * edge, edge, vD));
   float t = clamp((vL - 0.2) / 1.8, 0.0, 1.0);
   o = vec4(mix(vec3(0.55, 0.75, 1.0), vec3(1.0, 0.95, 0.85), t) * I, 1.0);
 }`;
@@ -1268,7 +1269,7 @@ function webStart() {
 // cweb_tree.json: the fixed ball of cweb_fil.json.
 const WEB_MAX = 12000000, XR_WEB_MAX = 3000000;
 const TREE = (() => {
-  const t = { started: false, ready: false, missing: false, meta: null, node: new Map(), cache: new Map(), wanted: new Set(),
+  const t = { started: false, ready: false, missing: false, meta: null, holes: [], edge: 1e9, node: new Map(), cache: new Map(), wanted: new Set(),
               inflight: 0, plan: [], drawn: [], drawnKeys: new Set(), eye: null, key: "", tPlan: 0, segs: 0, loaded: 0, total: 0 };
   const name = (l, i, j, k) => l + "/" + i + "_" + j + "_" + k;
   t.start = () => {
@@ -1284,6 +1285,12 @@ const TREE = (() => {
       } else n.kids = null;
       for (const [nm, n] of t.node) if (n.kids) for (const c of n.kids) t.node.get(c).up = nm;
       t.top = [...t.node.keys()].filter(k => !t.node.get(k).up);   // roots (a partly uploaded tree may lack some parents)
+      const nt = j.nt, s0 = j.levels[0].side, holes = new Set();   // tiles without data next to tiles with data
+      for (const n of t.node.values()) if (n.l === 0) for (const [a, b, d] of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]) {
+        const i = n.i + a, jj = n.j + b, k = n.k + d;
+        if (i >= 0 && jj >= 0 && k >= 0 && i < nt && jj < nt && k < nt && !t.node.has(name(0, i, jj, k))) holes.add(i + "," + jj + "," + k);
+      }
+      t.holes = [...holes].map(h => { const [i, jj, k] = h.split(",").map(Number); return { lo: [c + i * s0, c + jj * s0, c + k * s0], s: s0 }; });
       t.ready = true; status();
     }).catch(() => { t.missing = true; webStart(); });   // the old fixed ball
   };
@@ -1312,6 +1319,12 @@ const TREE = (() => {
       for (const c of op === "add" ? [k] : nd.kids) { const m = t.node.get(c); if (m.kids && m.kids.length) push([m.step / dist(m, eye), c, "refine"]); }
     }
     t.total = n;
+    // the web fades out before the nearest place it stops (a root left out by the budget, a tile without data), so the
+    // cube faces of the loaded nodes never show; places nearer than the nearest drawn node (camera outside the data) don't count
+    let d0 = Infinity; for (const k of sel) d0 = Math.min(d0, dist(t.node.get(k), eye));
+    let e = Infinity; for (const k of t.top) if (!sel.has(k)) { const d = dist(t.node.get(k), eye); if (d > d0) e = Math.min(e, d); }
+    for (const h of t.holes) { const d = dist(h, eye); if (d > d0) e = Math.min(e, d); }
+    t.edge = isFinite(e) ? e : 1e9;
     return [...sel].sort((a, b) => dist(t.node.get(a), eye) - dist(t.node.get(b), eye));
   }
   async function load(k) {
@@ -1700,14 +1713,15 @@ function renderView(V, f, slabMode) {
     gl.useProgram(webp.p); const wu = webp.u;
     gl.uniformMatrix3fv(wu.rotT, false, V.R.t); gl.uniform3fv(wu.cam, V.pos); gl.uniform4fv(wu.proj, P); gl.uniform1f(wu.focal, focal);
     gl.uniform1f(wu.w0, WEBL.w0); gl.uniform1f(wu.trim, WEBL.trim); gl.uniform1f(wu.gain, WEBL.gain * state.w.dm); gl.uniform1f(wu.fadeD, WEBL.fadeD); gl.uniform1f(wu.fade0, f0);
+    const edge = wParts === TREE.drawn ? TREE.edge : 1e9; gl.uniform1f(wu.edge, edge);
     gl.uniform1f(wu.chiLo, cLo); gl.uniform1f(wu.chiHi, cHi); gl.uniform1f(wu.roi, state.roi); gl.uniform3fv(wu.nep, NEP);
-    // a segment budget from the detail level; the parts and their segments go nearest first, so it cuts depth
-    // (the tree's nodes are planned within the budget already)
-    let left = PERF.q < 1 && wParts !== TREE.drawn ? PERF.q * wParts.reduce((a, pt) => a + pt.n, 0) : Infinity; const wN = wParts.map(pt => { const n = Math.min(pt.n, Math.max(0, left)); left -= n; return n; });
+    // a segment budget from the detail level for the fixed ball (parts nearest first, so it cuts depth); the tree's nodes
+    // are planned within the budget already, and a filter slab is drawn whole (its parts are tile blocks: a cut leaves holes)
+    let left = PERF.q < 1 && wParts === WEBL.parts ? PERF.q * wParts.reduce((a, pt) => a + pt.n, 0) : Infinity; const wN = wParts.map(pt => { const n = Math.min(pt.n, Math.max(0, left)); left -= n; return n; });
     wParts.forEach((pt, i) => { if (wN[i] > 0) { gl.bindVertexArray(pt.vao); gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, wN[i]); } });
     gl.useProgram(clp.p); const cu = clp.u;
     gl.uniformMatrix3fv(cu.rotT, false, V.R.t); gl.uniform3fv(cu.cam, V.pos); gl.uniform4fv(cu.proj, P); gl.uniform1f(cu.focal, focal);
-    gl.uniform1f(cu.trim, WEBL.trim); gl.uniform1f(cu.gain, WEBL.cgain * state.w.dm); gl.uniform1f(cu.fadeD, WEBL.fadeD); gl.uniform1f(cu.fade0, f0);
+    gl.uniform1f(cu.trim, WEBL.trim); gl.uniform1f(cu.gain, WEBL.cgain * state.w.dm); gl.uniform1f(cu.fadeD, WEBL.fadeD); gl.uniform1f(cu.fade0, f0); gl.uniform1f(cu.edge, edge);
     gl.uniform1f(cu.chiLo, cLo); gl.uniform1f(cu.chiHi, cHi); gl.uniform1f(cu.roi, state.roi); gl.uniform3fv(cu.nep, NEP);
     wParts.forEach((pt, i) => { const nm = Math.round(pt.nm * wN[i] / Math.max(1, pt.n)); if (pt.cvao && nm > 0) { gl.bindVertexArray(pt.cvao); gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, nm); } });
     gl.bindVertexArray(null); gl.disable(gl.BLEND);
